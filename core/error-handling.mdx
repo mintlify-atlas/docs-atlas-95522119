@@ -1,0 +1,237 @@
+---
+title: "Error Handling"
+description: "Understand and handle AmazonServiceException and AmazonClientException in the AWS SDK for .NET."
+---
+
+The AWS SDK for .NET surfaces two distinct exception base classes depending on where the failure originates.
+
+| Exception | Origin | Inherits from |
+|---|---|---|
+| `AmazonServiceException` | The AWS service returned an error response | `System.Exception` |
+| `AmazonClientException` | The SDK itself encountered an error before or after the HTTP call | `System.Exception` |
+
+## AmazonServiceException
+
+`AmazonServiceException` represents an error response returned by an AWS service. It carries structured metadata that you can inspect programmatically.
+
+### Key properties
+
+| Property | Type | Description |
+|---|---|---|
+| `ErrorCode` | `string` | The error code returned by the service (e.g., `NoSuchKey`, `ConditionalCheckFailedException`) |
+| `ErrorType` | `ErrorType` | Whether the fault is attributable to the caller (`Sender`) or the service (`Receiver`) |
+| `StatusCode` | `HttpStatusCode` | The HTTP status code from the service response (e.g., `404`, `400`, `503`) |
+| `RequestId` | `string` | The unique identifier for the request, useful when contacting AWS Support |
+| `Message` | `string` | Human-readable description of the error |
+| `Retryable` | `RetryableDetails` | Non-null if the SDK considers this exception retryable; `Retryable.Throttling` is `true` for throttling errors |
+
+### ErrorType enum
+
+```csharp
+public enum ErrorType
+{
+    Sender,    // The request itself is at fault (e.g., invalid parameters, missing permissions)
+    Receiver,  // The service is at fault (e.g., internal server error, service unavailable)
+    Unknown    // Could not be determined from the response
+}
+```
+
+A `Sender` error typically means retrying will not help — fix the request first. A `Receiver` error is often transient and is a candidate for retry.
+
+## AmazonClientException
+
+`AmazonClientException` is thrown when the SDK encounters a problem that is not tied to an HTTP response from the service. Examples include:
+
+- No region or endpoint configured (`AmazonClientException: No RegionEndpoint or ServiceURL configured`)
+- Adaptive retry mode exhausting its token bucket capacity before a request can be sent
+- A malformed `ServiceURL` that cannot be parsed as a valid URI
+- A credential provider that fails to resolve credentials
+
+`AmazonClientException` has no AWS-specific properties beyond `Message` and `InnerException`.
+
+## Basic try/catch pattern
+
+<CodeGroup>
+
+```csharp Catch both exception types
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
+
+var s3 = new AmazonS3Client(Amazon.RegionEndpoint.USEast1);
+
+try
+{
+    var response = await s3.GetObjectAsync(new GetObjectRequest
+    {
+        BucketName = "my-bucket",
+        Key        = "my-key"
+    });
+
+    // process response.ResponseStream …
+}
+catch (AmazonServiceException ex)
+{
+    // The service returned an error
+    Console.Error.WriteLine($"Service error [{ex.ErrorCode}] HTTP {(int)ex.StatusCode}: {ex.Message}");
+    Console.Error.WriteLine($"Request ID: {ex.RequestId}");
+    Console.Error.WriteLine($"Fault: {ex.ErrorType}");
+}
+catch (AmazonClientException ex)
+{
+    // The SDK failed before or after the HTTP call
+    Console.Error.WriteLine($"SDK error: {ex.Message}");
+}
+```
+
+```csharp Inspect ErrorType
+catch (AmazonServiceException ex)
+{
+    if (ex.ErrorType == ErrorType.Sender)
+    {
+        // The request was malformed or unauthorized — do not retry
+        throw;
+    }
+
+    if (ex.ErrorType == ErrorType.Receiver)
+    {
+        // The service is having trouble — may be worth retrying manually
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        // … retry logic
+    }
+}
+```
+
+```csharp Log and rethrow
+catch (AmazonServiceException ex)
+{
+    logger.LogError(
+        "AWS call failed. ErrorCode={ErrorCode} StatusCode={StatusCode} RequestId={RequestId}",
+        ex.ErrorCode,
+        (int)ex.StatusCode,
+        ex.RequestId);
+
+    throw; // preserve the original stack trace
+}
+```
+
+</CodeGroup>
+
+## Handling specific service errors
+
+Every service client package ships typed exception subclasses for each of the service's error codes. Catch these before the base `AmazonServiceException` to handle them distinctly.
+
+<CodeGroup>
+
+```csharp Amazon S3 — NoSuchKey
+using Amazon.S3;
+using Amazon.S3.Model;
+
+try
+{
+    var response = await s3.GetObjectAsync(new GetObjectRequest
+    {
+        BucketName = "my-bucket",
+        Key        = "does-not-exist"
+    });
+}
+catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchKey")
+{
+    Console.WriteLine("The requested object does not exist.");
+}
+catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchBucket")
+{
+    Console.WriteLine("The specified bucket does not exist.");
+}
+catch (AmazonS3Exception ex)
+{
+    Console.Error.WriteLine($"Unexpected S3 error: {ex.ErrorCode} — {ex.Message}");
+    throw;
+}
+```
+
+```csharp DynamoDB — ConditionalCheckFailed
+using Amazon.DynamoDBv2;
+using Amazon.DynamoDBv2.Model;
+
+try
+{
+    await dynamo.PutItemAsync(new PutItemRequest
+    {
+        TableName           = "Orders",
+        Item                = item,
+        ConditionExpression = "attribute_not_exists(OrderId)"
+    });
+}
+catch (ConditionalCheckFailedException)
+{
+    // An item with this OrderId already exists
+    Console.WriteLine("Optimistic locking conflict — item already exists.");
+}
+catch (ProvisionedThroughputExceededException ex)
+{
+    // The table's read/write capacity was exceeded
+    Console.Error.WriteLine($"Throughput exceeded: {ex.Message}");
+    throw;
+}
+```
+
+```csharp STS — ExpiredToken
+using Amazon.SecurityToken;
+using Amazon.SecurityToken.Model;
+
+try
+{
+    var identity = await sts.GetCallerIdentityAsync(new GetCallerIdentityRequest());
+    Console.WriteLine($"Account: {identity.Account}");
+}
+catch (AmazonSecurityTokenServiceException ex)
+    when (ex.ErrorCode is "ExpiredTokenException" or "InvalidClientTokenId")
+{
+    Console.Error.WriteLine("Credentials are invalid or have expired. Refresh your credentials.");
+    throw;
+}
+```
+
+</CodeGroup>
+
+## Accessing the Request ID
+
+Always log or surface the `RequestId` when an unexpected error occurs. AWS Support uses this identifier to locate server-side logs for a specific request.
+
+```csharp
+catch (AmazonServiceException ex)
+{
+    // Include the RequestId in any bug reports or support tickets
+    throw new ApplicationException(
+        $"AWS request failed (RequestId: {ex.RequestId}): {ex.Message}", ex);
+}
+```
+
+## Checking the Retryable flag
+
+The SDK's own retry handler inspects `AmazonServiceException.Retryable` to decide whether to retry automatically. You can inspect this property yourself when implementing manual retry loops:
+
+```csharp
+catch (AmazonServiceException ex)
+{
+    bool isRetryable = ex.Retryable != null;
+    bool isThrottling = ex.Retryable?.Throttling == true;
+
+    if (!isRetryable)
+    {
+        // Not a transient error; no point retrying
+        throw;
+    }
+
+    if (isThrottling)
+    {
+        // Back off more aggressively for throttling
+        await Task.Delay(TimeSpan.FromSeconds(5));
+    }
+}
+```
+
+<Warning>
+Do not silently swallow `AmazonClientException` or `AmazonServiceException`. Catching a broad exception and doing nothing hides misconfiguration, credential issues, and service outages that require human attention. Always at minimum log the `Message`, `ErrorCode`, and `RequestId` before discarding an exception.
+</Warning>

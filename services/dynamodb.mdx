@@ -1,0 +1,317 @@
+---
+title: "Amazon DynamoDB"
+description: "Use the AWS SDK for .NET to interact with Amazon DynamoDB using either the high-level DataModel API for strongly-typed .NET objects or the mid-level DocumentModel API for schema-flexible operations."
+---
+
+## Installation
+
+Add the `AWSSDK.DynamoDBv2` NuGet package to your project:
+
+```bash
+dotnet add package AWSSDK.DynamoDBv2
+```
+
+## Create a client
+
+```csharp
+using Amazon.DynamoDBv2;
+
+var dynamoClient = new AmazonDynamoDBClient();
+```
+
+---
+
+## Choose your API
+
+The SDK ships two higher-level abstractions on top of the raw DynamoDB service client:
+
+| API | Namespace | Best for |
+|-----|-----------|----------|
+| **DataModel** | `Amazon.DynamoDBv2.DataModel` | Strongly-typed .NET POCOs |
+| **DocumentModel** | `Amazon.DynamoDBv2.DocumentModel` | Schema-flexible `Document` objects |
+
+<Tip>
+  Use the **DataModel API** when your application works with well-defined .NET classes. It handles all serialisation and deserialisation automatically via attributes and convention, and it integrates cleanly with async/await patterns.
+</Tip>
+
+---
+
+<Tabs>
+  <Tab title="DataModel API">
+    ### Define a POCO
+
+    Decorate your class with `[DynamoDBTable]` and mark the key properties:
+
+    ```csharp
+    using Amazon.DynamoDBv2.DataModel;
+
+    [DynamoDBTable("Orders")]
+    public class Order
+    {
+        [DynamoDBHashKey]          // partition key
+        public string CustomerId { get; set; }
+
+        [DynamoDBRangeKey]         // sort key
+        public string OrderId { get; set; }
+
+        public string Status { get; set; }
+        public decimal TotalAmount { get; set; }
+        public DateTime CreatedAt { get; set; }
+
+        [DynamoDBIgnore]           // not persisted to DynamoDB
+        public string LocalOnlyField { get; set; }
+    }
+    ```
+
+    ### Create a DynamoDBContext
+
+    ```csharp
+    using Amazon.DynamoDBv2;
+    using Amazon.DynamoDBv2.DataModel;
+
+    var dynamoClient = new AmazonDynamoDBClient();
+    var context = new DynamoDBContext(dynamoClient);
+    ```
+
+    ### Save an item
+
+    ```csharp
+    var order = new Order
+    {
+        CustomerId  = "cust-001",
+        OrderId     = "ord-2024-001",
+        Status      = "Pending",
+        TotalAmount = 149.99m,
+        CreatedAt   = DateTime.UtcNow
+    };
+
+    await context.SaveAsync(order);
+    ```
+
+    ### Load an item
+
+    ```csharp
+    // Provide hash key and range key
+    var loaded = await context.LoadAsync<Order>("cust-001", "ord-2024-001");
+    Console.WriteLine($"{loaded.OrderId}: {loaded.Status}");
+    ```
+
+    ### Delete an item
+
+    ```csharp
+    await context.DeleteAsync<Order>("cust-001", "ord-2024-001");
+    ```
+
+    ### Query items
+
+    ```csharp
+    // Query all orders for a given customer
+    var search = context.QueryAsync<Order>("cust-001");
+    var orders = await search.GetRemainingAsync();
+
+    foreach (var o in orders)
+        Console.WriteLine($"{o.OrderId}: {o.Status}");
+    ```
+
+    ### Scan items
+
+    ```csharp
+    // Scan the entire table with a filter condition
+    var scanConfig = new ScanOperationConfig
+    {
+        Filter = new ScanFilter()
+    };
+    scanConfig.Filter.AddCondition("Status", ScanOperator.Equal, "Pending");
+
+    var scanSearch = context.FromScanAsync<Order>(scanConfig);
+    var pendingOrders = await scanSearch.GetRemainingAsync();
+    ```
+
+    ### Batch get
+
+    ```csharp
+    var batchGet = context.CreateBatchGet<Order>();
+    batchGet.AddKey("cust-001", "ord-2024-001");
+    batchGet.AddKey("cust-002", "ord-2024-002");
+
+    await batchGet.ExecuteAsync();
+
+    foreach (var result in batchGet.Results)
+        Console.WriteLine(result.OrderId);
+    ```
+
+    ### Batch write
+
+    ```csharp
+    var batchWrite = context.CreateBatchWrite<Order>();
+
+    batchWrite.AddPutItem(new Order
+    {
+        CustomerId  = "cust-003",
+        OrderId     = "ord-2024-003",
+        Status      = "Confirmed",
+        TotalAmount = 79.50m,
+        CreatedAt   = DateTime.UtcNow
+    });
+
+    batchWrite.AddDeleteKey("cust-001", "ord-2024-001");
+
+    await batchWrite.ExecuteAsync();
+    ```
+
+    ### Transactions
+
+    Use `CreateTransactWrite` to atomically write to multiple items or tables:
+
+    ```csharp
+    var transactWrite = context.CreateTransactWrite<Order>();
+
+    transactWrite.AddSaveItem(new Order
+    {
+        CustomerId  = "cust-004",
+        OrderId     = "ord-2024-004",
+        Status      = "Confirmed",
+        TotalAmount = 249.00m,
+        CreatedAt   = DateTime.UtcNow
+    });
+
+    transactWrite.AddDeleteKey("cust-001", "ord-2024-001");
+
+    await transactWrite.ExecuteAsync();
+    ```
+
+    Use `CreateTransactGet` to atomically read multiple items:
+
+    ```csharp
+    var transactGet = context.CreateTransactGet<Order>();
+    transactGet.AddKey("cust-004", "ord-2024-004");
+    transactGet.AddKey("cust-005", "ord-2024-005");
+
+    await transactGet.ExecuteAsync();
+
+    foreach (var result in transactGet.Results)
+        Console.WriteLine($"{result.OrderId}: {result.Status}");
+    ```
+  </Tab>
+
+  <Tab title="DocumentModel API">
+    The DocumentModel API works with `Document` objects — flexible string-keyed dictionaries that map to DynamoDB items. You load a `Table` reference once and then call methods on it directly.
+
+    ### Load a Table reference
+
+    ```csharp
+    using Amazon.DynamoDBv2;
+    using Amazon.DynamoDBv2.DocumentModel;
+
+    var dynamoClient = new AmazonDynamoDBClient();
+
+    // LoadTable fetches the table metadata from DynamoDB
+    var table = Table.LoadTable(dynamoClient, "Orders");
+    ```
+
+    ### Put an item
+
+    ```csharp
+    var item = new Document();
+    item["CustomerId"]  = "cust-001";
+    item["OrderId"]     = "ord-2024-001";
+    item["Status"]      = "Pending";
+    item["TotalAmount"] = 149.99;
+    item["CreatedAt"]   = DateTime.UtcNow.ToString("o");
+
+    await table.PutItemAsync(item);
+    ```
+
+    ### Get an item
+
+    ```csharp
+    // Specify partition key and sort key
+    var fetched = await table.GetItemAsync("cust-001", "ord-2024-001");
+
+    if (fetched != null)
+        Console.WriteLine($"Status: {fetched["Status"]}");
+    ```
+
+    ### Update an item
+
+    ```csharp
+    var update = new Document();
+    update["CustomerId"] = "cust-001";  // hash key
+    update["OrderId"]    = "ord-2024-001"; // range key
+    update["Status"]     = "Shipped";
+
+    await table.UpdateItemAsync(update);
+    ```
+
+    ### Delete an item
+
+    ```csharp
+    await table.DeleteItemAsync("cust-001", "ord-2024-001");
+    ```
+
+    ### Query
+
+    ```csharp
+    var queryFilter = new QueryFilter("CustomerId", QueryOperator.Equal, "cust-001");
+
+    var queryConfig = new QueryOperationConfig
+    {
+        Filter = queryFilter,
+        Limit  = 25
+    };
+
+    var search = table.Query(queryConfig);
+
+    while (!search.IsDone)
+    {
+        var page = await search.GetNextSetAsync();
+        foreach (var doc in page)
+            Console.WriteLine(doc["OrderId"]);
+    }
+    ```
+
+    ### Scan with a filter expression
+
+    ```csharp
+    var expression = new Expression
+    {
+        ExpressionStatement = "Status = :status",
+        ExpressionAttributeValues = { [":status"] = "Pending" }
+    };
+
+    var scanConfig = new ScanOperationConfig
+    {
+        FilterExpression = expression,
+        Limit = 50
+    };
+
+    var scanSearch = table.Scan(scanConfig);
+
+    while (!scanSearch.IsDone)
+    {
+        var page = await scanSearch.GetNextSetAsync();
+        foreach (var doc in page)
+            Console.WriteLine(doc["OrderId"]);
+    }
+    ```
+
+    ### Batch operations
+
+    ```csharp
+    // BatchGet across multiple keys
+    var batchGet = table.CreateBatchGet();
+    batchGet.AddKey("cust-001", "ord-2024-001");
+    batchGet.AddKey("cust-002", "ord-2024-002");
+    await batchGet.ExecuteAsync();
+
+    foreach (var doc in batchGet.Results)
+        Console.WriteLine(doc["Status"]);
+
+    // BatchWrite — mix puts and deletes
+    var batchWrite = table.CreateBatchWrite();
+    batchWrite.AddDocumentToPut(item);
+    batchWrite.AddKeyToDelete("cust-001", "ord-2024-001");
+    await batchWrite.ExecuteAsync();
+    ```
+  </Tab>
+</Tabs>

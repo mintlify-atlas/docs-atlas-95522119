@@ -1,0 +1,265 @@
+---
+title: "Amazon SQS & SNS"
+description: "Use the AWS SDK for .NET to send and receive SQS messages, create topics and subscriptions with SNS, and wire them together for a fan-out messaging pattern."
+---
+
+## Installation
+
+```bash
+dotnet add package AWSSDK.SQS
+dotnet add package AWSSDK.SimpleNotificationService
+```
+
+---
+
+<Tabs>
+  <Tab title="Amazon SQS">
+    ## Create a client
+
+    ```csharp
+    using Amazon.SQS;
+
+    var sqsClient = new AmazonSQSClient();
+    ```
+
+    ### Create a queue
+
+    ```csharp
+    using Amazon.SQS.Model;
+
+    var createResponse = await sqsClient.CreateQueueAsync(new CreateQueueRequest
+    {
+        QueueName = "my-work-queue",
+        Attributes = new Dictionary<string, string>
+        {
+            ["VisibilityTimeout"]             = "30",   // seconds
+            ["MessageRetentionPeriod"]        = "86400" // 1 day
+        }
+    });
+
+    string queueUrl = createResponse.QueueUrl;
+    Console.WriteLine($"Queue URL: {queueUrl}");
+    ```
+
+    ### Send a message
+
+    ```csharp
+    var sendResponse = await sqsClient.SendMessageAsync(new SendMessageRequest
+    {
+        QueueUrl    = queueUrl,
+        MessageBody = """{"orderId":"ord-001","action":"process"}"""
+    });
+
+    Console.WriteLine($"Sent message ID: {sendResponse.MessageId}");
+    ```
+
+    To delay delivery by up to 15 minutes (900 seconds), set `DelaySeconds`:
+
+    ```csharp
+    await sqsClient.SendMessageAsync(new SendMessageRequest
+    {
+        QueueUrl     = queueUrl,
+        MessageBody  = """{"orderId":"ord-002","action":"process"}""",
+        DelaySeconds = 60
+    });
+    ```
+
+    ### Receive messages with long polling
+
+    <Tip>
+      Set `WaitTimeSeconds` to a value between 1 and 20 to enable **long polling**. With long polling, SQS waits up to the specified number of seconds for a message to arrive before returning an empty response. This significantly reduces the number of empty `ReceiveMessage` calls, cutting your SQS costs and reducing CPU usage in polling loops.
+    </Tip>
+
+    ```csharp
+    var receiveResponse = await sqsClient.ReceiveMessageAsync(new ReceiveMessageRequest
+    {
+        QueueUrl            = queueUrl,
+        MaxNumberOfMessages = 10,        // 1–10
+        WaitTimeSeconds     = 20,        // long poll — wait up to 20 s for messages
+        VisibilityTimeout   = 30         // hide message for 30 s while processing
+    });
+
+    foreach (var message in receiveResponse.Messages ?? [])
+    {
+        Console.WriteLine($"Body: {message.Body}");
+        Console.WriteLine($"Receipt: {message.ReceiptHandle}");
+    }
+    ```
+
+    ### Delete a message
+
+    After you successfully process a message, delete it using its receipt handle:
+
+    ```csharp
+    await sqsClient.DeleteMessageAsync(new DeleteMessageRequest
+    {
+        QueueUrl      = queueUrl,
+        ReceiptHandle = message.ReceiptHandle
+    });
+    ```
+
+    ### Continuous polling pattern
+
+    Combine long polling with a cancellation token for a resilient polling loop:
+
+    ```csharp
+    using var cts = new CancellationTokenSource();
+
+    while (!cts.Token.IsCancellationRequested)
+    {
+        var response = await sqsClient.ReceiveMessageAsync(new ReceiveMessageRequest
+        {
+            QueueUrl            = queueUrl,
+            MaxNumberOfMessages = 10,
+            WaitTimeSeconds     = 20
+        }, cts.Token);
+
+        foreach (var msg in response.Messages)
+        {
+            try
+            {
+                await ProcessMessageAsync(msg.Body);
+
+                await sqsClient.DeleteMessageAsync(new DeleteMessageRequest
+                {
+                    QueueUrl      = queueUrl,
+                    ReceiptHandle = msg.ReceiptHandle
+                });
+            }
+            catch (Exception ex)
+            {
+                // Do not delete — message becomes visible again after VisibilityTimeout
+                Console.Error.WriteLine($"Failed to process {msg.MessageId}: {ex.Message}");
+            }
+        }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Amazon SNS">
+    ## Create a client
+
+    ```csharp
+    using Amazon.SimpleNotificationService;
+
+    var snsClient = new AmazonSimpleNotificationServiceClient();
+    ```
+
+    ### Create a topic
+
+    ```csharp
+    using Amazon.SimpleNotificationService.Model;
+
+    var createTopicResponse = await snsClient.CreateTopicAsync(new CreateTopicRequest
+    {
+        Name = "order-events"
+    });
+
+    string topicArn = createTopicResponse.TopicArn;
+    Console.WriteLine($"Topic ARN: {topicArn}");
+    ```
+
+    ### Publish a message
+
+    ```csharp
+    var publishResponse = await snsClient.PublishAsync(new PublishRequest
+    {
+        TopicArn = topicArn,
+        Subject  = "New Order",
+        Message  = """{"orderId":"ord-001","status":"created"}"""
+    });
+
+    Console.WriteLine($"Published message ID: {publishResponse.MessageId}");
+    ```
+
+    ### Subscribe an SQS queue to the topic
+
+    The `Protocol` is `"sqs"` and the `Endpoint` is the SQS queue ARN:
+
+    ```csharp
+    var subscribeResponse = await snsClient.SubscribeAsync(new SubscribeRequest
+    {
+        TopicArn = topicArn,
+        Protocol = "sqs",
+        Endpoint = "arn:aws:sqs:us-east-1:123456789012:my-work-queue"
+    });
+
+    Console.WriteLine($"Subscription ARN: {subscribeResponse.SubscriptionArn}");
+    ```
+
+    You can also subscribe an HTTPS endpoint, an email address, a Lambda function, or an Amazon Data Firehose delivery stream by changing `Protocol` and `Endpoint` accordingly.
+
+    ### Subscribe an email endpoint
+
+    ```csharp
+    await snsClient.SubscribeAsync(new SubscribeRequest
+    {
+        TopicArn = topicArn,
+        Protocol = "email",
+        Endpoint = "ops-team@example.com"
+    });
+    // The recipient receives a confirmation email and must click the link to activate.
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Fan-out pattern
+
+The SNS-to-SQS fan-out pattern lets a single published SNS message be delivered to multiple SQS queues simultaneously — useful for decoupled microservices that each need to react to the same event.
+
+```
+Publisher → SNS Topic → SQS Queue A (order fulfilment)
+                      → SQS Queue B (inventory update)
+                      → SQS Queue C (analytics)
+```
+
+```csharp
+using Amazon.SimpleNotificationService;
+using Amazon.SimpleNotificationService.Model;
+using Amazon.SQS;
+using Amazon.SQS.Model;
+
+var snsClient = new AmazonSimpleNotificationServiceClient();
+var sqsClient = new AmazonSQSClient();
+
+// 1. Create the SNS topic
+var topicArn = (await snsClient.CreateTopicAsync("order-events")).TopicArn;
+
+// 2. Create each SQS queue and subscribe it to the topic
+string[] queueNames = { "order-fulfilment", "inventory-update", "analytics" };
+
+foreach (var name in queueNames)
+{
+    // Create the queue
+    var queueUrl = (await sqsClient.CreateQueueAsync(name)).QueueUrl;
+
+    // Retrieve the queue ARN
+    var attrs = await sqsClient.GetQueueAttributesAsync(new GetQueueAttributesRequest
+    {
+        QueueUrl       = queueUrl,
+            AttributeNames = new List<string> { "QueueArn" }
+    });
+    string queueArn = attrs.Attributes?["QueueArn"] ?? throw new InvalidOperationException("QueueArn attribute not returned");
+
+    // Subscribe the queue to the topic
+    await snsClient.SubscribeAsync(new SubscribeRequest
+    {
+        TopicArn = topicArn,
+        Protocol = "sqs",
+        Endpoint = queueArn
+    });
+}
+
+// 3. Publish once — all three queues receive the message
+await snsClient.PublishAsync(new PublishRequest
+{
+    TopicArn = topicArn,
+    Message  = """{"orderId":"ord-001","status":"created"}"""
+});
+```
+
+<Note>
+  For SNS to deliver messages to an SQS queue you must attach a **resource-based policy** to the queue that grants `sqs:SendMessage` permission to the SNS topic ARN. Without this policy, deliveries fail silently.
+</Note>

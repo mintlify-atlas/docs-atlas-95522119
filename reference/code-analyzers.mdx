@@ -1,0 +1,90 @@
+---
+title: "Code analyzers"
+description: "Roslyn analyzers included in every AWS SDK for .NET NuGet package that warn you about invalid property values at compile time."
+keywords: ["analyzers", "roslyn", "code analysis", "compile-time", "warnings", "CS8032"]
+---
+
+Every service NuGet package in the AWS SDK for .NET includes a Roslyn code analyzer. The analyzer runs during your build and flags SDK usage that violates service-defined constraints, catching problems at compile time rather than at runtime when a request fails.
+
+<Note>
+The analyzer is automatically included when you install any `AWSSDK.*` service package from NuGet. You do not need any additional configuration to enable it.
+</Note>
+
+## What the analyzer checks
+
+The analyzer validates property values against rules derived from the AWS service model:
+
+- **Minimum and maximum string lengths** — warns if a string value is shorter or longer than the service accepts.
+- **Minimum and maximum numeric values** — warns if an integer or double falls outside the valid range.
+- **Enum value validity** — warns if you use a string constant where an enum value is expected and the string is not a recognized value.
+- **Required fields** — warns if a required request property is not set.
+
+These are the same constraints the service enforces on the server side. Catching them locally saves a round trip and gives you a clear diagnostic message pointing to the offending line.
+
+## Example warning
+
+Given this code that sets an S3 bucket name that is too short:
+
+```csharp
+var request = new PutBucketRequest
+{
+    BucketName = "ab"  // S3 bucket names must be at least 3 characters
+};
+```
+
+The analyzer produces a build warning similar to:
+
+```
+warning AWSSDK1002: 'BucketName' value 'ab' is too short.
+                    Minimum length is 3. [MyProject.csproj]
+```
+
+The warning includes the rule that was violated and the constraint value, so you can fix the issue without consulting the service documentation.
+
+## Requirements
+
+The analyzers target **.NET Standard 2.0** and require **Visual Studio 2019 RTM or later** (announced in [SDK issue #2998](https://github.com/aws/aws-sdk-net/issues/2998)). Starting with package version `3.7.200`, all `AWSSDK.*` packages ship analyzers built against .NET Standard 2.0.
+
+### Visual Studio 2017 and earlier
+
+If you are on Visual Studio 2017 or an earlier version, the analyzers will fail to load and the compiler will emit a `CS8032` warning:
+
+```
+warning CS8032: An instance of analyzer AWSSDK.Analyzers.XXX cannot be
+               created from /path/to/analyzer.dll : Could not load file or
+               assembly 'netstandard, Version=2.0.0.0' ...
+```
+
+Your build will still succeed (the SDK will still work), but the analyzer diagnostics will not run. If your build is configured to treat warnings as errors, suppress `CS8032` using `WarningsNotAsErrors`:
+
+```xml
+<!-- In your .csproj -->
+<PropertyGroup>
+  <WarningsNotAsErrors>CS8032</WarningsNotAsErrors>
+</PropertyGroup>
+```
+
+## Suppressing analyzer warnings
+
+If you have a case where you know a value is valid despite the analyzer warning — for example, a dynamically computed value that you have validated separately — you can suppress the diagnostic with a pragma:
+
+```csharp
+#pragma warning disable AWSSDK1002
+var request = new PutBucketRequest { BucketName = dynamicBucketName };
+#pragma warning restore AWSSDK1002
+```
+
+Or suppress it for the entire project via the project file:
+
+```xml
+<PropertyGroup>
+  <NoWarn>$(NoWarn);AWSSDK1002</NoWarn>
+</PropertyGroup>
+```
+
+Use project-wide suppression sparingly. Disabling an analyzer rule project-wide means you lose the protection it provides for all other usages in your code.
+
+## Related
+
+- [NuGet packages](/reference/nuget-packages)
+- [Troubleshooting](/reference/troubleshooting)

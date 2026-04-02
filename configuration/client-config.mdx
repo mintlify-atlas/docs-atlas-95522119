@@ -1,0 +1,192 @@
+---
+title: "Client Configuration"
+description: "Configure per-client settings such as region, endpoint, retries, timeout, and proxy for the AWS SDK for .NET."
+---
+
+Every AWS service client in the SDK accepts a service-specific configuration object that inherits from the abstract `ClientConfig` class. For example, the S3 client accepts `AmazonS3Config`, the DynamoDB client accepts `AmazonDynamoDBConfig`, and so on.
+
+You can configure a client either inline at construction time or by creating a config object separately and passing it in.
+
+<CodeGroup>
+```csharp Inline configuration
+using Amazon.S3;
+
+var client = new AmazonS3Client(new AmazonS3Config
+{
+    RegionEndpoint = Amazon.RegionEndpoint.USWest2,
+    MaxErrorRetry = 5,
+    Timeout = TimeSpan.FromSeconds(30)
+});
+```
+
+```csharp Separate config object
+using Amazon.S3;
+using Amazon.Runtime;
+
+var config = new AmazonS3Config();
+config.RegionEndpoint = Amazon.RegionEndpoint.USWest2;
+config.MaxErrorRetry = 5;
+config.Timeout = TimeSpan.FromSeconds(30);
+
+var client = new AmazonS3Client(config);
+```
+</CodeGroup>
+
+## Key properties
+
+<ParamField path="RegionEndpoint" type="RegionEndpoint">
+  The AWS region to send requests to. Use one of the constants on the `Amazon.RegionEndpoint` class.
+
+  `RegionEndpoint` and `ServiceURL` are **mutually exclusive** — setting one clears the other. Whichever property is set last takes effect.
+
+  ```csharp
+  config.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
+  ```
+
+  When neither property is set explicitly, the SDK resolves the region from (in order): the `AWS_DEFAULT_REGION` environment variable, the profile's `region` field, and `AWSConfigs.AWSRegion`.
+</ParamField>
+
+<ParamField path="ServiceURL" type="string">
+  A fully-qualified URL for a custom or local endpoint. Use this when pointing the SDK at a local development stack such as LocalStack, a VPC endpoint, or an API Gateway Management API endpoint.
+
+  `ServiceURL` and `RegionEndpoint` are mutually exclusive — setting one clears the other.
+
+  ```csharp
+  // LocalStack
+  config.ServiceURL = "http://localhost:4566/";
+  ```
+
+  ```csharp
+  // API Gateway Management API (has a resource path — do not append "/")
+  config.ServiceURL = "https://abc123.execute-api.us-east-1.amazonaws.com/prod";
+  ```
+
+  The SDK automatically appends a trailing `/` when the URL has no path component, to avoid signature mismatches.
+</ParamField>
+
+<ParamField path="MaxErrorRetry" type="int" default="2">
+  The maximum number of **retry** attempts for a failed request. The total number of attempts is `MaxErrorRetry + 1`.
+
+  The default is 2 retries (3 total attempts) for `Standard` and `Adaptive` retry modes. DynamoDB clients default to 10 retries.
+
+  You can also control this globally through the `AWS_MAX_ATTEMPTS` environment variable or the `max_attempts` field in the shared config file. Note that the environment/config value represents **total attempts**, so the SDK subtracts 1 when exposing it through this property.
+
+  ```csharp
+  config.MaxErrorRetry = 5; // up to 5 retries, 6 total attempts
+  ```
+</ParamField>
+
+<ParamField path="Timeout" type="TimeSpan?">
+  The request timeout applied to the underlying `HttpClient`. Applies to synchronous calls; async calls should use a `CancellationToken` for timeout control.
+
+  When not set explicitly, the SDK uses the `TimeToFirstByteTimeout` from the active `DefaultConfigurationMode`.
+
+  ```csharp
+  config.Timeout = TimeSpan.FromSeconds(15);
+  ```
+
+  ```csharp
+  // Disable timeout (wait indefinitely)
+  config.Timeout = TimeSpan.FromMilliseconds(-1); // Timeout.InfiniteTimeSpan
+  ```
+</ParamField>
+
+<ParamField path="ProxyHost" type="string">
+  The hostname or IP address of an HTTP/HTTPS proxy server. Must be combined with `ProxyPort`.
+
+  ```csharp
+  config.ProxyHost = "proxy.corp.example.com";
+  config.ProxyPort = 8080;
+  ```
+</ParamField>
+
+<ParamField path="ProxyPort" type="int">
+  The port number of the proxy server. Only takes effect when `ProxyHost` is also set.
+
+  ```csharp
+  config.ProxyHost = "10.0.0.5";
+  config.ProxyPort = 3128;
+  config.ProxyCredentials = new System.Net.NetworkCredential("proxyuser", "proxypass");
+  ```
+</ParamField>
+
+<ParamField path="UseHttp" type="bool" default="false">
+  When `true`, the SDK uses HTTP instead of HTTPS for the resolved `RegionEndpoint`. This property has no effect when `ServiceURL` is set, because the scheme is part of the URL you provide.
+
+  ```csharp
+  // Only appropriate for local development / testing
+  config.UseHttp = true;
+  ```
+
+  <Warning>
+    Never set `UseHttp = true` in production. All AWS API traffic must be encrypted in transit.
+  </Warning>
+</ParamField>
+
+<ParamField path="ThrottleRetries" type="bool" default="true">
+  Controls the SDK's retry throttling feature. When enabled, the SDK tracks a per-endpoint retry token bucket. If a large percentage of requests are failing, the bucket drains and retries are throttled — returning errors immediately instead of tying up threads in futile retry loops.
+
+  Disable this only if you require every eligible failure to be retried regardless of overall error rate:
+
+  ```csharp
+  config.ThrottleRetries = false;
+  ```
+</ParamField>
+
+## Proxy configuration example
+
+```csharp
+using Amazon.S3;
+using System.Net;
+
+var config = new AmazonS3Config
+{
+    RegionEndpoint = Amazon.RegionEndpoint.USEast1,
+    ProxyHost = "proxy.corp.example.com",
+    ProxyPort = 8080,
+    ProxyCredentials = new NetworkCredential("proxyuser", "s3cr3t")
+};
+
+var client = new AmazonS3Client(config);
+```
+
+On .NET (non-BCL), you can also configure a proxy by setting the `http_proxy` or `https_proxy` environment variables. The SDK reads those automatically via `GetHttpProxy()` / `GetHttpsProxy()` when no `ProxyHost` is set.
+
+## LocalStack / custom endpoint example
+
+```csharp
+using Amazon.S3;
+using Amazon.Runtime;
+
+var credentials = new BasicAWSCredentials("test", "test"); // LocalStack ignores credentials
+
+var config = new AmazonS3Config
+{
+    ServiceURL = "http://localhost:4566/",
+    ForcePathStyle = true // required for LocalStack S3
+};
+
+var client = new AmazonS3Client(credentials, config);
+```
+
+## Retry mode configuration
+
+The `RetryMode` property selects the retry strategy. Available values are `Legacy`, `Standard`, and `Adaptive`.
+
+```csharp
+using Amazon.S3;
+using Amazon.Runtime;
+
+var config = new AmazonS3Config
+{
+    RegionEndpoint = Amazon.RegionEndpoint.USEast1,
+    RetryMode = RequestRetryMode.Standard,
+    MaxErrorRetry = 3
+};
+```
+
+| Mode | Behavior |
+|---|---|
+| `Legacy` | Original SDK retry logic with exponential backoff. |
+| `Standard` | AWS cross-SDK standard: exponential backoff with jitter, retry token bucket, and throttle retry handling. Default for new clients. |
+| `Adaptive` | Extends `Standard` with client-side rate limiting that adjusts dynamically based on throttling responses. |

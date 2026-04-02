@@ -1,24 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "AWS SDK for .NET",
+  "projectType": "sdk-library",
+  "projectName": "AWS SDK for .NET",
+  "projectDescription": "The official AWS SDK for .NET, providing modular NuGet packages to integrate .NET applications with Amazon Web Services.",
   "theme": "maple",
-  "colors": {
-    "primary": "#32a2de",
-    "light": "#fc655a",
-    "dark": "#8c949c"
-  },
-  "favicon": "/favicon.svg",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/aws/aws-sdk-net"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/aws/aws-sdk-net"
-    }
-  },
+  "primaryColor": "#32a2de",
+  "lightColor": "#fc655a",
+  "darkColor": "#8c949c",
   "navigation": {
     "tabs": [
       {
@@ -27,7 +14,7 @@
           {
             "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
               "installation"
             ]
@@ -92,5 +79,33 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Modular NuGet packages per AWS service (e.g., AWSSDK.S3, AWSSDK.DynamoDBv2)",
+    "Async/await support across all service clients",
+    "Automatic credential discovery via credential provider chain",
+    "DynamoDB high-level DataModel (object persistence) and DocumentModel APIs",
+    "S3 TransferUtility for multipart upload/download",
+    "ASP.NET Core dependency injection support via AWSSDK.Extensions.NETCore.Setup",
+    "Built-in retry policies (standard, adaptive)",
+    "Code analyzers included in NuGet packages for compile-time validation",
+    "AWS Common Runtime (CRT) integration for advanced S3 features",
+    "Telemetry and observability hooks via TelemetryProvider"
+  ],
+  "publicApiSurface": [
+    "AmazonServiceClient (base class for all service clients)",
+    "ClientConfig / IClientConfig",
+    "AWSCredentials / BasicAWSCredentials / InstanceProfileAWSCredentials",
+    "FallbackCredentialsFactory",
+    "CredentialProfileStoreChain / SharedCredentialsFile",
+    "IDynamoDBContext / DynamoDBContext",
+    "TransferUtility (S3)",
+    "AWSConfigs",
+    "RegionEndpoint",
+    "IServiceCollection.AddDefaultAWSOptions() / AddAWSService<T>()",
+    "RetryPolicy / StandardRetryPolicy / AdaptiveRetryPolicy",
+    "TelemetryProvider / DefaultTelemetryProvider",
+    "AmazonWebServiceRequest / AmazonWebServiceResponse",
+    "IEndpointProvider"
+  ]
 }

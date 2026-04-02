@@ -1,0 +1,289 @@
+---
+title: "ASP.NET Core Integration"
+description: "Register AWS service clients in the ASP.NET Core dependency injection container using AWSSDK.Extensions.NETCore.Setup."
+---
+
+The `AWSSDK.Extensions.NETCore.Setup` package integrates the AWS SDK for .NET with the ASP.NET Core dependency injection (DI) and configuration systems. It lets you configure AWS options once — including region, credentials, and client settings — and then inject typed service clients such as `IAmazonS3` or `IAmazonDynamoDB` directly into your controllers and services.
+
+## Installation
+
+```bash
+dotnet add package AWSSDK.Extensions.NETCore.Setup
+dotnet add package AWSSDK.S3
+```
+
+Add any additional AWS service packages you need alongside the setup package.
+
+## Configuration
+
+The extension reads AWS options from `IConfiguration`. By convention, settings live under the top-level `"AWS"` key in `appsettings.json`.
+
+```json
+{
+  "AWS": {
+    "Region": "us-east-1",
+    "Profile": "myprofile",
+    "RetryMode": "Standard",
+    "MaxErrorRetry": 3
+  }
+}
+```
+
+Supported top-level keys inside the `"AWS"` section include:
+
+| Key | Type | Description |
+|---|---|---|
+| `Region` | string | AWS region system name (e.g. `us-east-1`) |
+| `Profile` | string | Named credential profile from `~/.aws/credentials` |
+| `ProfilesLocation` | string | Path to a non-standard credentials file |
+| `SessionRoleArn` | string | IAM role ARN to assume |
+| `SessionName` | string | Session name for the assumed role (default: `DefaultSessionName`) |
+| `DefaultsMode` | string | SDK defaults mode: `Standard`, `InRegion`, `CrossRegion`, `Mobile`, `Auto`, `Legacy` |
+| `RetryMode` | string | Retry strategy: `Legacy`, `Standard`, `Adaptive` |
+| `MaxErrorRetry` | int | Maximum number of retry attempts |
+| `Timeout` | int | HTTP timeout in milliseconds |
+| `UseDualstackEndpoint` | bool | Route requests through dual-stack (IPv4/IPv6) endpoints |
+| `UseFIPSEndpoint` | bool | Route requests through FIPS-compliant endpoints |
+
+You can also configure logging behaviour under `"AWS"."Logging"`:
+
+```json
+{
+  "AWS": {
+    "Region": "us-east-1",
+    "Logging": {
+      "LogTo": "SystemDiagnostics",
+      "LogResponses": "OnError",
+      "LogMetrics": true,
+      "LogResponsesSizeLimit": 4096
+    }
+  }
+}
+```
+
+## Setup in Program.cs
+
+<Steps>
+  <Step title="Read AWS options from configuration">
+    Call `GetAWSOptions()` on `IConfiguration` to deserialize the `"AWS"` section into an `AWSOptions` object, then register it with `AddDefaultAWSOptions()`. Every service client registered afterwards will use these options unless you explicitly override them.
+
+    ```csharp
+    var builder = WebApplication.CreateBuilder(args);
+
+    // Read options from the "AWS" section of appsettings.json
+    builder.Services.AddDefaultAWSOptions(builder.Configuration.GetAWSOptions());
+    ```
+  </Step>
+
+  <Step title="Register AWS service clients">
+    Call `AddAWSService<T>()` for each AWS service interface you need. The client is not instantiated until it is first requested from the container.
+
+    ```csharp
+    builder.Services.AddAWSService<IAmazonS3>();
+    builder.Services.AddAWSService<IAmazonDynamoDB>();
+    ```
+
+    By default, service clients are registered as **singletons**. You can change this:
+
+    ```csharp
+    builder.Services.AddAWSService<IAmazonS3>(ServiceLifetime.Scoped);
+    ```
+  </Step>
+
+  <Step title="Inject and use the client">
+    Declare the AWS service interface as a constructor parameter. The DI container resolves and injects the client automatically.
+
+    ```csharp
+    public class StorageService
+    {
+        private readonly IAmazonS3 _s3;
+
+        public StorageService(IAmazonS3 s3)
+        {
+            _s3 = s3;
+        }
+
+        public async Task<IEnumerable<string>> ListBucketsAsync()
+        {
+            var response = await _s3.ListBucketsAsync();
+            return (response.Buckets ?? []).Select(b => b.BucketName);
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+### Complete Program.cs example
+
+```csharp
+using Amazon.DynamoDBv2;
+using Amazon.S3;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register shared AWS options from appsettings.json
+builder.Services.AddDefaultAWSOptions(builder.Configuration.GetAWSOptions());
+
+// Register service clients — both share the default options
+builder.Services.AddAWSService<IAmazonS3>();
+builder.Services.AddAWSService<IAmazonDynamoDB>();
+
+// Register your own services that depend on the AWS clients
+builder.Services.AddScoped<StorageService>();
+
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+app.MapControllers();
+app.Run();
+```
+
+### Example controller
+
+```csharp
+using Amazon.S3;
+using Amazon.S3.Model;
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("[controller]")]
+public class FilesController : ControllerBase
+{
+    private readonly IAmazonS3 _s3;
+
+    public FilesController(IAmazonS3 s3)
+    {
+        _s3 = s3;
+    }
+
+    [HttpGet("{bucket}")]
+    public async Task<IActionResult> ListObjects(string bucket)
+    {
+        var request = new ListObjectsV2Request { BucketName = bucket };
+        var response = await _s3.ListObjectsV2Async(request);
+        var keys = (response.S3Objects ?? []).Select(o => o.Key);
+        return Ok(keys);
+    }
+}
+```
+
+## Per-service option overrides
+
+You can supply a different `AWSOptions` instance to a specific `AddAWSService<T>()` call. This overrides the default options only for that client, which is useful when different services must target different regions or use different credentials.
+
+<Tip>
+  Pass a custom `AWSOptions` directly to `AddAWSService<T>()` to configure one client differently from the rest without affecting the shared defaults. This is the preferred approach when, for example, your S3 bucket lives in `us-west-2` while the rest of your stack targets `us-east-1`.
+</Tip>
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Default options — used by most services
+builder.Services.AddDefaultAWSOptions(builder.Configuration.GetAWSOptions());
+
+builder.Services.AddAWSService<IAmazonDynamoDB>(); // uses default region
+
+// Override for S3: target a different region
+var s3Options = new AWSOptions
+{
+    Region = Amazon.RegionEndpoint.USWest2
+};
+builder.Services.AddAWSService<IAmazonS3>(s3Options);
+```
+
+You can also build `AWSOptions` programmatically and mix in values from configuration:
+
+```csharp
+builder.Services.AddDefaultAWSOptions(sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var options = config.GetAWSOptions();
+
+    // Programmatic overrides on top of appsettings.json values
+    options.Region = Amazon.RegionEndpoint.EUWest1;
+    options.DefaultClientConfig.MaxErrorRetry = 5;
+
+    return options;
+});
+```
+
+## Keyed services (.NET 8+)
+
+On .NET 8 and later you can register multiple clients of the same interface under different keys, then inject the exact instance you need using `[FromKeyedServices]`.
+
+```csharp
+// Register two S3 clients targeting different regions
+var primaryOptions = new AWSOptions { Region = Amazon.RegionEndpoint.USEast1 };
+var backupOptions  = new AWSOptions { Region = Amazon.RegionEndpoint.EUWest1 };
+
+builder.Services.AddKeyedAWSService<IAmazonS3>("primary", primaryOptions);
+builder.Services.AddKeyedAWSService<IAmazonS3>("backup",  backupOptions);
+```
+
+```csharp
+public class ReplicationService
+{
+    private readonly IAmazonS3 _primary;
+    private readonly IAmazonS3 _backup;
+
+    public ReplicationService(
+        [FromKeyedServices("primary")] IAmazonS3 primary,
+        [FromKeyedServices("backup")]  IAmazonS3 backup)
+    {
+        _primary = primary;
+        _backup  = backup;
+    }
+}
+```
+
+## AWSOptions reference
+
+`AWSOptions` is the central configuration object passed to `AddDefaultAWSOptions()` and optionally to `AddAWSService<T>()`.
+
+```csharp
+var options = new AWSOptions
+{
+    // Credential resolution
+    Profile          = "myprofile",          // Named profile from ~/.aws/credentials
+    ProfilesLocation = "/custom/credentials", // Non-standard credentials file path
+    Credentials      = new BasicAWSCredentials("key", "secret"), // Explicit credentials
+
+    // Request routing
+    Region           = Amazon.RegionEndpoint.USEast1,
+    SessionRoleArn   = "arn:aws:iam::123456789012:role/MyRole",
+    SessionName      = "MyAppSession",
+    ExternalId       = "partner-external-id",
+
+    // Configuration mode
+    DefaultConfigurationMode = DefaultConfigurationMode.Standard,
+
+    // Logging (applied to global AWSConfigs.LoggingConfig)
+    Logging = new AWSOptions.LoggingSetting
+    {
+        LogTo                = LoggingOptions.SystemDiagnostics,
+        LogResponses         = ResponseLoggingOption.OnError,
+        LogMetrics           = true,
+        LogResponsesSizeLimit = 4096
+    },
+
+    // Low-level client defaults (applied to every created ClientConfig)
+    DefaultClientConfig =
+    {
+        RetryMode      = RequestRetryMode.Standard,
+        MaxErrorRetry  = 3,
+        Timeout        = TimeSpan.FromSeconds(30),
+        UseFIPSEndpoint = false
+    }
+};
+```
+
+`DefaultClientConfig` properties are applied to every service client created from these options. Individual `ClientConfig` properties like `AmazonS3Config.UseAccelerateEndpoint` can be set via `DefaultClientConfig.ServiceSpecificSettings`:
+
+```csharp
+options.DefaultClientConfig.ServiceSpecificSettings["UseAccelerateEndpoint"] = "true";
+```
+
+<Tip>
+  When running on an EC2 instance or in another AWS compute environment (Lambda, ECS, etc.), you can omit `Region` and `Profile` entirely. The SDK resolves credentials from the instance metadata service and the region from the `AWS_DEFAULT_REGION` environment variable or the instance's region automatically.
+</Tip>

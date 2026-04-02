@@ -1,0 +1,58 @@
+---
+title: "Versioning"
+description: "How the AWS SDK for .NET versions its packages, manages binary compatibility, and handles internal APIs."
+keywords: ["versioning", "semver", "assembly", "binary compatibility", "breaking changes"]
+---
+
+The AWS SDK for .NET uses a four-part version scheme that gives you precise information about the nature of any change between releases.
+
+## Version format: `w.x.y.z`
+
+Each segment of the version number has a specific meaning:
+
+| Segment | Meaning |
+|---------|---------|
+| `w` | **Code breaking change.** Incremented when a change requires you to modify your source code — for example, a renamed method, a changed method signature, or a removed type. |
+| `x` | **Binary breaking change.** Incremented when the change breaks assembly-level compatibility. This segment is used to identify which versions of `AWSSDK.Core` are binary-compatible with a given service package. |
+| `y` | **New feature.** Incremented for a new SDK capability (such as new credential management) or an AWS service model update that adds new operations, request fields, or response fields. |
+| `z` | **Bug fix.** Incremented for bug fixes, or when a service package updates to the latest `AWSSDK.Core` to pull in core bug fixes. |
+
+### Example: binary compatibility
+
+If `AWSSDK.SQS` version `3.3.1.0` was released when `AWSSDK.Core` was at version `3.3.17.5`, then `AWSSDK.SQS 3.3.1.0` is compatible with all versions of `AWSSDK.Core` from `3.3.17.5` up to, but not including, a future `3.4.0.0`. The `x` segment (`3`) in both packages is the signal that they share the same binary interface.
+
+## Assembly version vs. file version
+
+The SDK assemblies are strongly named. Strong naming means .NET must recompile any assembly that references the SDK when the `AssemblyVersion` attribute changes. To avoid forcing you to recompile your application for every bug fix or service update, the SDK limits the `AssemblyVersion` attribute to only the `w.x` portion of the version number:
+
+```
+AssemblyVersion:     4.0    (only w.x — does not change for y or z increments)
+AssemblyFileVersion: 4.0.3.12 (full w.x.y.z — always reflects the true version)
+```
+
+This means you can update from `4.0.1.0` to `4.0.3.12` without recompiling your code. A recompile is only required when the `x` or `w` segment increments.
+
+<Tip>
+To confirm the exact version of an SDK assembly at runtime, read `AssemblyFileVersion` rather than `AssemblyVersion`. You can also inspect the package version in your `.csproj` or `packages.lock.json`. Check the [SDK changelog](https://github.com/aws/aws-sdk-net/blob/main/changelogs/SDK.CHANGELOG.ALL.md) before upgrading to identify any breaking changes relevant to your usage.
+</Tip>
+
+## Package modularization
+
+The SDK is split into separate NuGet packages per service. An application using S3 and SQS references `AWSSDK.S3` and `AWSSDK.SQS` — both of which pull in `AWSSDK.Core` as a transitive dependency. Each service package's `x` segment version indicates the minimum `AWSSDK.Core` version it requires.
+
+You generally do not need to add an explicit reference to `AWSSDK.Core` in your project file — NuGet resolves it automatically.
+
+## The `Internal` namespace
+
+Some types in the SDK are marked `public` but reside in a namespace containing the word `Internal` (for example, `Amazon.Runtime.Internal`). These types are logically internal to the SDK but must be public so that service packages can use shared functionality from `AWSSDK.Core`.
+
+The SDK does not use `[InternalsVisibleTo]` for this purpose because doing so would require `AWSSDK.Core` to enumerate every service package at compile time — which is impossible for packages released after a given Core version.
+
+<Note>
+Types in `Internal` namespaces are **not covered by the versioning guarantees described above**. They can be modified or removed in any release, including `y` (feature) and `z` (bug fix) releases. If you find yourself needing to use an `Internal` type directly, consider [opening a feature request](https://github.com/aws/aws-sdk-net/issues/new/choose) instead.
+</Note>
+
+## Related
+
+- [NuGet packages](/reference/nuget-packages)
+- [SDK changelog](https://github.com/aws/aws-sdk-net/blob/main/changelogs/SDK.CHANGELOG.ALL.md)

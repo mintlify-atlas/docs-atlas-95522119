@@ -1,0 +1,240 @@
+---
+title: "Endpoint Configuration"
+description: "Control how the AWS SDK for .NET resolves service endpoints, including custom URLs, FIPS, dual-stack, and programmatic endpoint providers."
+---
+
+Every service client needs to know which HTTP endpoint to send requests to. The SDK resolves endpoints in a layered order: explicit configuration on the `ClientConfig` takes priority, then environment variables and shared config, then the built-in endpoint ruleset for the target service and region.
+
+## Default endpoint resolution
+
+When you supply only a `RegionEndpoint`, the SDK uses the service's built-in endpoint rules to construct the URL. For most services in a standard partition this produces a URL of the form `https://{service}.{region}.amazonaws.com`.
+
+```csharp
+using Amazon.S3;
+
+// The SDK resolves https://s3.us-east-1.amazonaws.com automatically
+var s3 = new AmazonS3Client(Amazon.RegionEndpoint.USEast1);
+```
+
+`RegionEndpoint` and `ServiceURL` are **mutually exclusive**. Setting one resets the other to `null` with a log-level info message. Whichever property is set last wins.
+
+## Setting a custom ServiceURL
+
+Use `ServiceURL` to override the endpoint entirely. This is the right approach for LocalStack, VPC interface endpoints, third-party AWS-compatible APIs, or any situation where you need to bypass the SDK's built-in resolution.
+
+<Tabs>
+  <Tab title="LocalStack">
+    ```csharp
+    using Amazon.S3;
+
+    var config = new AmazonS3Config
+    {
+        ServiceURL      = "http://localhost:4566",
+        ForcePathStyle  = true   // LocalStack requires path-style URLs for S3
+    };
+
+    using var s3 = new AmazonS3Client(
+        new Amazon.Runtime.BasicAWSCredentials("test", "test"),
+        config);
+    ```
+  </Tab>
+  <Tab title="VPC Interface Endpoint">
+    ```csharp
+    using Amazon.SQS;
+
+    // A VPC interface endpoint replaces the public hostname
+    var config = new AmazonSQSConfig
+    {
+        ServiceURL = "https://vpce-0a1b2c3d4e-xyz.sqs.us-east-1.vpce.amazonaws.com"
+    };
+
+    using var sqs = new AmazonSQSClient(config);
+    ```
+  </Tab>
+  <Tab title="Custom compatible API">
+    ```csharp
+    using Amazon.DynamoDBv2;
+
+    // DynamoDB Local or any compatible service
+    var config = new AmazonDynamoDBConfig
+    {
+        ServiceURL = "http://localhost:8000"
+    };
+
+    using var dynamo = new AmazonDynamoDBClient(
+        new Amazon.Runtime.BasicAWSCredentials("fakeKey", "fakeSecret"),
+        config);
+    ```
+  </Tab>
+</Tabs>
+
+The SDK normalises the URL: if the path component is empty or `/`, a trailing slash is appended to avoid signature mismatch issues.
+
+## RegionEndpoint
+
+`RegionEndpoint` is an immutable reference to a known AWS region. You can retrieve a region by its system name string:
+
+```csharp
+var region = Amazon.RegionEndpoint.GetBySystemName("ap-southeast-2");
+var s3 = new AmazonS3Client(region);
+```
+
+You can enumerate all known regions:
+
+```csharp
+foreach (var r in Amazon.RegionEndpoint.EnumerableAllRegions)
+{
+    Console.WriteLine($"{r.SystemName} — {r.DisplayName}");
+}
+```
+
+<Note>
+  The `RegionEndpoint.EnumerableAllRegions` list is sourced from the embedded endpoint metadata bundled with the SDK. If you are working with a new region before the SDK has been updated, use `RegionEndpoint.GetBySystemName("new-region-code")` and the SDK will construct a best-effort endpoint from the known pattern.
+</Note>
+
+## FIPS endpoints
+
+FIPS-140 compliant endpoints are available in most US regions. Set `UseFIPSEndpoint = true` on the config to instruct the endpoint ruleset to select the FIPS variant:
+
+```csharp
+using Amazon.S3;
+
+var config = new AmazonS3Config
+{
+    RegionEndpoint  = Amazon.RegionEndpoint.USGovWest1,
+    UseFIPSEndpoint = true
+};
+
+using var s3 = new AmazonS3Client(config);
+// Resolves to https://s3-fips.us-gov-west-1.amazonaws.com
+```
+
+You can also set this globally via the `AWS_USE_FIPS_ENDPOINT=true` environment variable or `use_fips_endpoint = true` in your shared config file.
+
+## Dual-stack (IPv6) endpoints
+
+Services that support IPv6 can be reached via dual-stack endpoints:
+
+```csharp
+using Amazon.S3;
+
+var config = new AmazonS3Config
+{
+    RegionEndpoint       = Amazon.RegionEndpoint.EUWest1,
+    UseDualstackEndpoint = true
+};
+
+using var s3 = new AmazonS3Client(config);
+// Resolves to https://s3.dualstack.eu-west-1.amazonaws.com
+```
+
+Enable globally via `AWS_USE_DUALSTACK_ENDPOINT=true` or `use_dualstack_endpoint = true`.
+
+## IEndpointProvider — custom endpoint resolution
+
+For advanced scenarios you can implement `IEndpointProvider` to take full control of endpoint selection. The interface has a single method:
+
+```csharp
+namespace Amazon.Runtime.Endpoints
+{
+    public interface IEndpointProvider
+    {
+        Endpoint ResolveEndpoint(EndpointParameters parameters);
+    }
+}
+```
+
+`EndpointParameters` carries contextual information (region, use-FIPS flag, use-dualstack flag, and service-specific parameters). `Endpoint` wraps a URL string along with optional attributes and per-request headers:
+
+```csharp
+public class Endpoint
+{
+    public string URL { get; set; }
+    public IPropertyBag Attributes { get; set; }
+    public IDictionary<string, IList<string>> Headers { get; set; }
+}
+```
+
+### StaticEndpointProvider
+
+`StaticEndpointProvider` is a ready-made `IEndpointProvider` that always returns the same URL, regardless of the parameters passed to it:
+
+```csharp
+using Amazon.Runtime.Endpoints;
+using Amazon.S3;
+
+var provider = new StaticEndpointProvider("http://localhost:4566");
+
+var config = new AmazonS3Config
+{
+    EndpointProvider = provider,
+    ForcePathStyle   = true
+};
+
+using var s3 = new AmazonS3Client(
+    new Amazon.Runtime.BasicAWSCredentials("test", "test"),
+    config);
+```
+
+### Custom IEndpointProvider
+
+Implement the interface to route traffic based on any criteria — request parameters, environment, or feature flags:
+
+```csharp
+using Amazon.Runtime.Endpoints;
+
+public class BluegreenEndpointProvider : IEndpointProvider
+{
+    private readonly string _blueUrl;
+    private readonly string _greenUrl;
+    private readonly Func<bool> _useGreen;
+
+    public BluegreenEndpointProvider(string blueUrl, string greenUrl, Func<bool> useGreen)
+    {
+        _blueUrl  = blueUrl;
+        _greenUrl = greenUrl;
+        _useGreen = useGreen;
+    }
+
+    public Endpoint ResolveEndpoint(EndpointParameters parameters)
+    {
+        var url = _useGreen() ? _greenUrl : _blueUrl;
+        return new Endpoint(url);
+    }
+}
+
+// Wire it up
+var config = new AmazonDynamoDBConfig
+{
+    EndpointProvider = new BluegreenEndpointProvider(
+        "https://dynamo-blue.internal",
+        "https://dynamo-green.internal",
+        () => FeatureFlags.IsEnabled("green-dynamo"))
+};
+```
+
+## Environment variable and config file override
+
+The SDK checks `AWS_ENDPOINT_URL` (global) and `AWS_ENDPOINT_URL_{SERVICE_ID}` (service-specific) environment variables before falling back to the endpoint ruleset:
+
+```bash
+# Override all services
+export AWS_ENDPOINT_URL=http://localhost:4566
+
+# Override only S3
+export AWS_ENDPOINT_URL_S3=http://localhost:4566
+```
+
+The equivalent in a shared configuration profile:
+
+```ini
+[profile localdev]
+endpoint_url = http://localhost:4566
+
+# Service-specific override
+[profile localdev]
+s3 =
+    endpoint_url = http://localhost:4566
+```
+
+Set `IgnoreConfiguredEndpointUrls = true` on the config object to suppress these lookups and use only the value you set programmatically.

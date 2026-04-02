@@ -1,0 +1,198 @@
+---
+title: "Request Pipeline"
+description: "Understand the AWS SDK for .NET runtime pipeline and learn how to insert custom handlers for logging, metrics, or request modification."
+---
+
+Every service call in the AWS SDK for .NET travels through a `RuntimePipeline` — an ordered chain of `IPipelineHandler` implementations. Each handler performs one stage of processing, then delegates to the next by calling `InnerHandler.InvokeSync` (or its async equivalent). The pipeline runs synchronously top-to-bottom on the way in and bottom-to-top on the way out, similar to middleware stacks in web frameworks.
+
+## Architecture
+
+`RuntimePipeline` holds a reference to the **top-most** handler in the chain. Handlers form a doubly-linked list through `InnerHandler` (next toward the HTTP call) and `OuterHandler` (next toward the caller):
+
+```
+[OutermostHandler] → [Marshaller] → [Endpoint Resolver] → [Signer]
+    → [Retry Handler] → [Error Handler] → [HTTP Handler]
+```
+
+```csharp
+namespace Amazon.Runtime.Internal
+{
+    public partial class RuntimePipeline : IDisposable
+    {
+        // Top-most handler; calling InvokeSync/InvokeAsync starts the chain
+        public IPipelineHandler Handler { get; }
+
+        public IResponseContext InvokeSync(IExecutionContext executionContext);
+        public Task<T> InvokeAsync<T>(IExecutionContext executionContext)
+            where T : AmazonWebServiceResponse, new();
+
+        public void AddHandler(IPipelineHandler handler);          // prepend to top
+        public void AddHandlerAfter<T>(IPipelineHandler handler);  // insert after T
+        public void AddHandlerBefore<T>(IPipelineHandler handler); // insert before T
+        public void RemoveHandler<T>();
+        public void ReplaceHandler<T>(IPipelineHandler handler);
+    }
+}
+```
+
+## Built-in handlers
+
+The SDK assembles the pipeline from the following handlers for each service client. They execute in the order listed.
+
+<AccordionGroup>
+  <Accordion title="Marshaller">
+    Serializes the strongly-typed request object (e.g., `GetObjectRequest`) into the HTTP request structure: URL, headers, query string, and body. Runs only on the way **in** (pre-invoke).
+  </Accordion>
+  <Accordion title="EndpointResolver / BaseEndpointResolver">
+    Calls the service-specific `IEndpointProvider.ResolveEndpoint` to determine the final URL for the request. Merges any per-endpoint headers returned by the provider into the outgoing request.
+  </Accordion>
+  <Accordion title="Signer (BaseAuthResolverHandler + Signer)">
+    Selects the authentication scheme (SigV4, SigV4a, bearer token) according to `ClientConfig.AuthSchemePreference` and the schemes advertised by the service, then signs the request. Re-signing on retry is controlled by `ClientConfig.ResignRetries`.
+  </Accordion>
+  <Accordion title="RetryHandler">
+    Wraps the inner portion of the pipeline in a retry loop. After catching an exception, it calls the active `RetryPolicy` to decide whether to retry, calls `WaitBeforeRetry` to apply backoff, and re-invokes the inner chain. Also calls `ObtainSendToken` before each attempt when running in Adaptive mode.
+  </Accordion>
+  <Accordion title="ErrorHandler">
+    Catches `HttpErrorResponseException` from the HTTP handler and delegates to registered `IExceptionHandler` implementations (e.g., `HttpErrorResponseExceptionHandler`) to translate raw HTTP error responses into typed `AmazonServiceException` subclasses.
+  </Accordion>
+  <Accordion title="MetricsHandler">
+    Bookends every invocation with timing and metric collection. Calls `LogMetrics` after the inner chain returns (or throws) to write request latency, retry counts, and HTTP status codes to the configured logger.
+  </Accordion>
+  <Accordion title="HttpHandler">
+    The terminating handler. Sends the serialized HTTP request using the underlying `HttpClient` (or `HttpWebRequest` on .NET Framework) and populates the response context with the raw HTTP response stream.
+  </Accordion>
+  <Accordion title="Unmarshaller">
+    Deserializes the HTTP response body and headers into the strongly-typed response object (e.g., `GetObjectResponse`). Runs on the way **out** after the inner chain returns successfully.
+  </Accordion>
+  <Accordion title="ChecksumHandler">
+    Calculates and validates checksums (CRC32, SHA256, etc.) for operations that require integrity checking, according to `ClientConfig.RequestChecksumCalculation` and `ClientConfig.ResponseChecksumValidation`.
+  </Accordion>
+  <Accordion title="CompressionHandler">
+    Compresses request payloads for supported operations when `ClientConfig.DisableRequestCompression` is `false` and the payload is larger than `ClientConfig.RequestMinCompressionSizeBytes`.
+  </Accordion>
+  <Accordion title="RedirectHandler">
+    Handles HTTP 307 (Temporary Redirect) responses by retrying the request against the location returned in the `Location` header. Controlled by `ClientConfig.AllowAutoRedirect`.
+  </Accordion>
+</AccordionGroup>
+
+## IPipelineHandler interface
+
+```csharp
+namespace Amazon.Runtime
+{
+    public partial interface IPipelineHandler
+    {
+        ILogger Logger { get; set; }
+
+        // Next handler toward the HTTP call
+        IPipelineHandler InnerHandler { get; set; }
+
+        // Previous handler toward the caller
+        IPipelineHandler OuterHandler { get; set; }
+
+        void InvokeSync(IExecutionContext executionContext);
+
+        Task<T> InvokeAsync<T>(IExecutionContext executionContext)
+            where T : AmazonWebServiceResponse, new();
+    }
+}
+```
+
+The abstract `PipelineHandler` base class provides default implementations of both `InvokeSync` and `InvokeAsync` that simply forward the call to `InnerHandler`. Subclass `PipelineHandler` rather than implementing `IPipelineHandler` from scratch in all but the most specialised cases.
+
+## Writing a custom handler
+
+Override `InvokeSync` and `InvokeAsync<T>` in a `PipelineHandler` subclass. Call `base.InvokeSync(executionContext)` (or `base.InvokeAsync<T>`) to forward the call down the chain:
+
+```csharp
+using System;
+using System.Diagnostics;
+using System.Threading.Tasks;
+using Amazon.Runtime;
+using Amazon.Runtime.Internal;
+
+public class RequestTimingHandler : PipelineHandler
+{
+    public override void InvokeSync(IExecutionContext executionContext)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            base.InvokeSync(executionContext);
+        }
+        finally
+        {
+            sw.Stop();
+            var requestName = executionContext.RequestContext.RequestName;
+            Console.WriteLine($"[TIMING] {requestName} completed in {sw.ElapsedMilliseconds} ms");
+        }
+    }
+
+    public override async Task<T> InvokeAsync<T>(IExecutionContext executionContext)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            return await base.InvokeAsync<T>(executionContext);
+        }
+        finally
+        {
+            sw.Stop();
+            var requestName = executionContext.RequestContext.RequestName;
+            Console.WriteLine($"[TIMING] {requestName} completed in {sw.ElapsedMilliseconds} ms");
+        }
+    }
+}
+```
+
+## Inserting a custom handler
+
+Access the pipeline through the service client's `RuntimePipeline` property and call one of the mutation methods:
+
+```csharp
+using Amazon.S3;
+using Amazon.Runtime.Internal;
+
+using var s3 = new AmazonS3Client(Amazon.RegionEndpoint.USEast1);
+
+// Insert the timing handler at the very top of the pipeline
+// (executes first on the way in, last on the way out)
+s3.RuntimePipeline.AddHandler(new RequestTimingHandler());
+
+// Or insert it directly before the Marshaller
+s3.RuntimePipeline.AddHandlerBefore<Marshaller>(new RequestTimingHandler());
+
+// Or insert it after the Signer so signed values are already set
+s3.RuntimePipeline.AddHandlerAfter<Signer>(new RequestTimingHandler());
+```
+
+<Note>
+  Handler order matters. A handler inserted before `Signer` runs before the request is signed, so any headers or URL modifications you make will be included in the signature. A handler inserted after `Signer` runs after signing; adding headers there will cause signature verification to fail for services that include headers in the signed payload.
+</Note>
+
+## Replacing or removing a handler
+
+```csharp
+// Swap out the built-in retry handler for a custom one
+s3.RuntimePipeline.ReplaceHandler<RetryHandler>(new MyRetryHandler());
+
+// Remove the metrics handler entirely
+s3.RuntimePipeline.RemoveHandler<MetricsHandler>();
+```
+
+`RemoveHandler<T>` throws `InvalidOperationException` if the handler is not found or if it is the last handler in the chain.
+
+## Enumerating pipeline handlers
+
+You can inspect the current pipeline at runtime for diagnostic purposes:
+
+```csharp
+foreach (var handler in s3.RuntimePipeline.Handlers)
+{
+    Console.WriteLine(handler.GetType().Name);
+}
+```
+
+<Warning>
+  Modifying the runtime pipeline is advanced usage. The built-in handlers make assumptions about execution order — for example, `ErrorHandler` expects to sit between `RetryHandler` and `HttpHandler` so that it can translate HTTP error responses before the retry decision is made. Inserting a handler in the wrong position or removing a required handler can cause serialization failures, unsigned requests, or requests that are never sent. Test pipeline changes thoroughly before deploying to production.
+</Warning>

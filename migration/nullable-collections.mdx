@@ -1,0 +1,162 @@
+---
+title: "Null collections in V4"
+description: "Why collection properties default to null in V4 and how to write null-safe code when working with SDK request and response types."
+keywords: ["null collections", "nullable", "InitializeCollections", "migration", "v4"]
+---
+
+In V4, `List<T>` and `Dictionary<TKey, TValue>` properties on SDK request and response types default to `null` instead of being pre-initialized to empty collections. This page explains the reasoning behind this change and shows you how to work with nullable collections safely.
+
+## Why collections default to null
+
+### Performance
+
+V3 initialized every collection property on every object, whether you used it or not. Consider DynamoDB's `AttributeValue` type: it has five collection properties covering all possible DynamoDB collection types (list, map, binary set, number set, string set). A query returning 700 items with 6 attributes each causes V3 to allocate **21,000 empty collection objects** — none of which hold any data. The garbage collector then has to reclaim all of them.
+
+V4 eliminates this overhead entirely. Collections are only allocated when you assign to them or when the service response actually includes collection data.
+
+### Intent clarity
+
+Empty collections in V3 made it impossible to distinguish intent:
+
+- When **sending a request**, was an empty `List<T>` something you set explicitly (e.g., to clear all tags) or was it the SDK's default? The service receives the empty list either way, which can trigger unintended updates.
+- When **reading a response**, was an empty `List<T>` returned by the service, or did the SDK just pre-initialize it? There was no way to tell.
+
+With V4's null-default behavior:
+- `null` means the property was not set (on a request) or was not returned (in a response).
+- An empty collection means you set it explicitly, or the service explicitly returned an empty list.
+
+## Testing V4 behavior before you upgrade
+
+The `AWSConfigs.InitializeCollections` property was backported to V3, so you can switch your V3 application to null-default collection behavior and verify it handles nulls correctly — before upgrading to V4.
+
+```csharp
+// Add to your V3 application startup to test V4 collection behavior
+Amazon.AWSConfigs.InitializeCollections = false;
+```
+
+Run your full test suite with this setting enabled. Any code that iterates over collections without null guards will surface `NullReferenceException` errors, which you can fix before upgrading.
+
+## Restoring V3 behavior in V4
+
+If you need time to migrate your code incrementally, set `InitializeCollections = true` at application startup in your V4 application:
+
+```csharp
+// Set before constructing any SDK clients
+Amazon.AWSConfigs.InitializeCollections = true;
+```
+
+<Warning>
+Setting `InitializeCollections = true` also changes request behavior: the SDK will send a collection to the service even if it is empty. In V4's default mode, an empty (non-null) collection is sent while a null collection is omitted. With `InitializeCollections = true`, empty collections are sent just as in V3. Verify that this does not cause unintended side effects in your application before using it in production.
+</Warning>
+
+## Null-safe patterns
+
+### Using `?.` for conditional member access
+
+Use the null-conditional operator to access properties or call methods on a collection that might be null:
+
+```csharp
+var response = await dynamoClient.QueryAsync(request);
+
+// Count without risking NullReferenceException
+int itemCount = response.Items?.Count ?? 0;
+```
+
+### Using `??` to provide a fallback
+
+Use the null-coalescing operator to fall back to an empty collection when iterating:
+
+```csharp
+var response = await s3Client.GetObjectTaggingAsync(request);
+
+foreach (var tag in response.TagSet ?? [])
+{
+    Console.WriteLine($"{tag.Key} = {tag.Value}");
+}
+```
+
+### Null check before enumeration
+
+An explicit null check is clearest when you have multiple operations on the same collection:
+
+```csharp
+var response = await s3Client.ListObjectsV2Async(request);
+
+if (response.S3Objects != null)
+{
+    Console.WriteLine($"Found {response.S3Objects.Count} objects");
+    foreach (var obj in response.S3Objects)
+    {
+        Console.WriteLine(obj.Key);
+    }
+}
+```
+
+### Initializing a collection on a request with `??=`
+
+Use the null-coalescing assignment operator to lazily initialize a collection property before adding items:
+
+```csharp
+var request = new PutObjectTaggingRequest
+{
+    BucketName = "my-bucket",
+    Key = "my-object"
+};
+
+// Initialize only when needed
+request.Tagging ??= new Tagging();
+request.Tagging.TagSet ??= new List<Tag>();
+request.Tagging.TagSet.Add(new Tag { Key = "env", Value = "production" });
+```
+
+### LINQ with null-safe enumeration
+
+LINQ extension methods throw on null sources. Use `??` with an empty collection to keep LINQ expressions safe:
+
+```csharp
+var response = await iamClient.ListPoliciesAsync(request);
+
+var managedPolicies = (response.Policies ?? [])
+    .Where(p => p.AttachmentCount > 0)
+    .Select(p => p.PolicyName)
+    .ToList();
+```
+
+<Tip>
+`response.Collection ?? []` (using a collection expression) is idiomatic C# 12+. For earlier language versions, use `response.Collection ?? Enumerable.Empty<T>()` for read-only iteration, or `response.Collection ?? new List<T>()` when you need a materialized list.
+</Tip>
+
+## V3 vs V4 patterns side by side
+
+<CodeGroup>
+
+```csharp V3 pattern
+// V3 — collections are always initialized, safe to iterate directly
+var response = await dynamoClient.QueryAsync(request);
+
+foreach (var item in response.Items)
+{
+    // process each item
+}
+
+int count = response.Items.Count;
+```
+
+```csharp V4 pattern
+// V4 — collections are null when not returned by the service
+var response = await dynamoClient.QueryAsync(request);
+
+foreach (var item in response.Items ?? [])
+{
+    // process each item
+}
+
+int count = response.Items?.Count ?? 0;
+```
+
+</CodeGroup>
+
+## Related
+
+- [Migrating from V3 to V4](/migration/v3-to-v4)
+- [Troubleshooting](/reference/troubleshooting)

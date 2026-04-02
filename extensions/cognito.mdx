@@ -1,0 +1,237 @@
+---
+title: "Cognito Authentication"
+description: "Authenticate users against Amazon Cognito User Pools using the Amazon.Extensions.CognitoAuthentication library."
+---
+
+The `Amazon.Extensions.CognitoAuthentication` library simplifies authentication against [Amazon Cognito User Pools](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-identity-pools.html) for .NET applications. It wraps the lower-level `AWSSDK.CognitoIdentityProvider` API and exposes higher-level authentication flows — including Secure Remote Password (SRP), multi-factor authentication (MFA), and token refresh — through a handful of strongly-typed method calls.
+
+<Note>
+  `Amazon.Extensions.CognitoAuthentication` is a separate library maintained in its own repository ([aws/aws-sdk-net-extensions-cognito](https://github.com/aws/aws-sdk-net-extensions-cognito)). It is distinct from the low-level `AWSSDK.CognitoIdentityProvider` package, which provides the raw Cognito API. The extension library builds on top of `AWSSDK.CognitoIdentityProvider` and adds the high-level authentication helpers documented here.
+</Note>
+
+## Installation
+
+```bash
+dotnet add package Amazon.Extensions.CognitoAuthentication
+```
+
+The package targets .NET Standard 2.0 and pulls in `AWSSDK.CognitoIdentity` and `AWSSDK.CognitoIdentityProvider` automatically.
+
+## Core objects
+
+Three objects model the Cognito concepts you work with most:
+
+| Object | Purpose |
+|---|---|
+| `CognitoUserPool` | Represents a User Pool. Holds the pool ID, client ID, and an `AmazonCognitoIdentityProviderClient`. |
+| `CognitoUser` | Represents a single user within a pool. Holds the username, session tokens, and device information after authentication. |
+| `CognitoDevice` | Represents a tracked device associated with a user. Required when a pool has device tracking enabled. |
+
+## Authenticating with SRP
+
+Secure Remote Password (SRP) is the recommended authentication flow. The user's password is verified cryptographically without transmitting it in plaintext. Call `StartWithSrpAuthAsync()` and inspect the returned `AuthFlowResponse`.
+
+```csharp
+using Amazon.CognitoIdentityProvider;
+using Amazon.Extensions.CognitoAuthentication;
+using Amazon.Runtime;
+
+public async Task<AuthFlowResponse> AuthenticateWithSrpAsync(
+    string username,
+    string password)
+{
+    // Use AnonymousAWSCredentials for the initial unauthenticated call
+    var provider = new AmazonCognitoIdentityProviderClient(
+        new AnonymousAWSCredentials(),
+        Amazon.RegionEndpoint.USEast1);
+
+    var userPool = new CognitoUserPool("us-east-1_POOLID", "YOUR_CLIENT_ID", provider);
+    var user     = new CognitoUser(username, "YOUR_CLIENT_ID", userPool, provider);
+
+    var authResponse = await user.StartWithSrpAuthAsync(new InitiateSrpAuthRequest
+    {
+        Password = password
+    });
+
+    return authResponse;
+}
+```
+
+If authentication succeeds without additional challenges, `authResponse.AuthenticationResult` contains the user's tokens:
+
+```csharp
+if (authResponse.AuthenticationResult != null)
+{
+    var idToken      = authResponse.AuthenticationResult.IdToken;
+    var accessToken  = authResponse.AuthenticationResult.AccessToken;
+    var refreshToken = authResponse.AuthenticationResult.RefreshToken;
+
+    Console.WriteLine($"Authenticated. Access token expires in " +
+                      $"{authResponse.AuthenticationResult.ExpiresIn}s");
+}
+```
+
+## Handling authentication challenges
+
+Cognito can require additional steps after the initial SRP exchange — for example, forcing a password change on first login or requesting an MFA code. When a challenge is required, `authResponse.AuthenticationResult` is `null` and `authResponse.ChallengeName` identifies the next step.
+
+```csharp
+while (authResponse.AuthenticationResult == null)
+{
+    switch (authResponse.ChallengeName)
+    {
+        case ChallengeNameType.NEW_PASSWORD_REQUIRED:
+            // Prompt the user for a new password on first login
+            Console.Write("Enter your new password: ");
+            string newPassword = Console.ReadLine();
+
+            authResponse = await user.RespondToNewPasswordRequiredAsync(
+                new RespondToNewPasswordRequiredRequest
+                {
+                    SessionID   = authResponse.SessionID,
+                    NewPassword = newPassword
+                });
+            break;
+
+        case ChallengeNameType.SMS_MFA:
+            // Prompt the user for the code sent to their phone
+            Console.Write("Enter the MFA code sent to your device: ");
+            string mfaCode = Console.ReadLine();
+
+            authResponse = await user.RespondToSmsMfaAuthAsync(
+                new RespondToSmsMfaRequest
+                {
+                    SessionID = authResponse.SessionID,
+                    MfaCode   = mfaCode
+                });
+            break;
+
+        default:
+            throw new InvalidOperationException(
+                $"Unhandled authentication challenge: {authResponse.ChallengeName}");
+    }
+}
+
+// authResponse.AuthenticationResult is now populated
+Console.WriteLine("Authentication complete.");
+```
+
+## Refreshing tokens
+
+Cognito access and ID tokens expire after one hour. Use the refresh token (which can be configured to remain valid for days or weeks) to obtain new tokens without requiring the user to re-enter their password.
+
+```csharp
+using Amazon.CognitoIdentityProvider;
+using Amazon.Extensions.CognitoAuthentication;
+
+public async Task<AuthFlowResponse> RefreshSessionAsync(
+    string username,
+    string refreshToken)
+{
+    using var provider = new AmazonCognitoIdentityProviderClient(
+        Amazon.RegionEndpoint.USEast1);
+
+    var userPool = new CognitoUserPool("us-east-1_POOLID", "YOUR_CLIENT_ID", provider);
+    var user     = new CognitoUser(username, "YOUR_CLIENT_ID", userPool, provider)
+    {
+        // Set the existing session tokens on the user object
+        SessionTokens = new CognitoUserSession(
+            idToken:      null,
+            accessToken:  null,
+            refreshToken: refreshToken,
+            issuedTime:   DateTime.UtcNow,
+            expirationTime: DateTime.UtcNow.AddHours(1))
+    };
+
+    // If the pool has device tracking enabled, attach the device:
+    // user.Device = new CognitoDevice(
+    //     new DeviceType { DeviceKey = deviceKey }, user);
+
+    var authResponse = await user.StartWithRefreshTokenAuthAsync(
+        new InitiateRefreshTokenAuthRequest
+        {
+            AuthFlowType = AuthFlowType.REFRESH_TOKEN_AUTH
+        });
+
+    return authResponse;
+}
+```
+
+## Accessing AWS resources with Cognito credentials
+
+After a user authenticates, you can obtain temporary AWS credentials scoped to the identity pool's IAM role and use them to call other AWS services.
+
+```csharp
+using Amazon;
+using Amazon.CognitoIdentity;
+using Amazon.CognitoIdentityProvider;
+using Amazon.Extensions.CognitoAuthentication;
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
+
+public async Task ListUserBucketsAsync(string username, string password)
+{
+    var provider = new AmazonCognitoIdentityProviderClient(
+        new AnonymousAWSCredentials(),
+        RegionEndpoint.USEast1);
+
+    var userPool = new CognitoUserPool("us-east-1_POOLID", "YOUR_CLIENT_ID", provider);
+    var user     = new CognitoUser(username, "YOUR_CLIENT_ID", userPool, provider);
+
+    await user.StartWithSrpAuthAsync(new InitiateSrpAuthRequest
+    {
+        Password = password
+    });
+
+    // Exchange the Cognito tokens for temporary AWS credentials
+    var credentials = user.GetCognitoAWSCredentials(
+        "us-east-1:IDENTITY_POOL_ID",
+        RegionEndpoint.USEast1);
+
+    using var s3 = new AmazonS3Client(credentials);
+
+    var response = await s3.ListBucketsAsync();
+    foreach (var bucket in response.Buckets)
+    {
+        Console.WriteLine(bucket.BucketName);
+    }
+}
+```
+
+## Other authentication flows
+
+<Accordion title="Custom authentication (Lambda triggers)">
+  Custom authentication invokes Cognito Lambda triggers to implement your own challenge logic. Start the flow with `StartWithCustomAuthAsync()`:
+
+  ```csharp
+  var authResponse = await user.StartWithCustomAuthAsync(
+      new InitiateCustomAuthRequest
+      {
+          AuthParameters = new Dictionary<string, string>
+          {
+              ["CHALLENGE_NAME"] = "CUSTOM_CHALLENGE"
+          }
+      });
+  ```
+</Accordion>
+
+<Accordion title="Admin No-SRP authentication">
+  Admin No-SRP authenticates on the server side using an admin API call. It requires a backend with IAM credentials that have the `cognito-idp:AdminInitiateAuth` permission. This flow bypasses SRP and should only be used in trusted server environments, never in client-facing code.
+
+  ```csharp
+  var authResponse = await user.StartWithAdminNoSrpAuthAsync(
+      new InitiateAdminNoSrpAuthRequest
+      {
+          Password = password
+      });
+  ```
+</Accordion>
+
+## Token reference
+
+| Token | Typical validity | Purpose |
+|---|---|---|
+| **Access token** | 1 hour | Authorise calls to Cognito APIs (e.g. `GetUser`, `ChangePassword`) |
+| **ID token** | 1 hour | Contains user identity claims; use with identity pools to get AWS credentials |
+| **Refresh token** | Configurable (1–3650 days) | Obtain new access and ID tokens without re-authenticating |

@@ -1,0 +1,172 @@
+---
+title: "Migrating from V3 to V4"
+description: "A guide to the breaking changes in AWS SDK for .NET V4 and how to update your code."
+keywords: ["migration", "v3", "v4", "breaking changes", "upgrade"]
+---
+
+V4 of the AWS SDK for .NET introduces several breaking changes that improve performance, type safety, and intent clarity. This guide walks through each change and shows you how to update your code.
+
+<Warning>
+V4 contains breaking changes. Review each section below carefully before upgrading. Test your application thoroughly after applying changes, especially any code that reads from response collection properties.
+</Warning>
+
+## What changed in V4
+
+<Steps>
+  <Step title="Collections default to null">
+    In V3, `List<T>` and `Dictionary<TKey, TValue>` properties on request and response types were initialized to empty collections by default. In V4 they default to `null`.
+
+    This change eliminates thousands of unnecessary allocations. For example, DynamoDB's `AttributeValue` type has five collection properties. A query returning 700 items with 6 attributes each would create 21,000 unused empty collections in V3 — all of which the garbage collector then had to reclaim.
+
+    See [Null Collections in V4](/migration/nullable-collections) for full details and safe-access patterns.
+  </Step>
+  <Step title="Value types changed to nullable">
+    Properties that were previously non-nullable value types (`int`, `bool`, `DateTime`, `double`, etc.) are now nullable (`int?`, `bool?`, `DateTime?`, `double?`). This lets the SDK distinguish between a property you explicitly set to `0` or `false` versus one you left uninitialized.
+  </Step>
+  <Step title="Target framework changes">
+    V4 targets .NET Framework 4.7.2, .NET Standard 2.0, .NET Core 3.1, and .NET 8. Support for older targets (PCL, Unity legacy, Xamarin) has been removed. If your project targets .NET Framework 4.6.x or earlier, you must upgrade your target framework before adopting the V4 SDK.
+  </Step>
+</Steps>
+
+## Breaking change 1: Null collections
+
+<Warning>
+Any code that iterates over or accesses a response collection without a null check will throw a `NullReferenceException` at runtime in V4.
+</Warning>
+
+### Before (V3)
+
+```csharp
+// Safe in V3 — Tags was always an empty list if not returned by the service
+var response = await s3Client.GetObjectTaggingAsync(request);
+foreach (var tag in response.TagSet)
+{
+    Console.WriteLine($"{tag.Key} = {tag.Value}");
+}
+```
+
+### After (V4)
+
+```csharp
+// V4 — TagSet is null when the service returns no tags
+var response = await s3Client.GetObjectTaggingAsync(request);
+foreach (var tag in response.TagSet ?? [])
+{
+    Console.WriteLine($"{tag.Key} = {tag.Value}");
+}
+```
+
+Or with a null check:
+
+```csharp
+var response = await s3Client.GetObjectTaggingAsync(request);
+if (response.TagSet != null)
+{
+    foreach (var tag in response.TagSet)
+    {
+        Console.WriteLine($"{tag.Key} = {tag.Value}");
+    }
+}
+```
+
+### Temporarily restoring V3 behavior
+
+If you want to upgrade to V4 without immediately fixing every collection access, you can set `AWSConfigs.InitializeCollections = true` at application startup. This reverts collection initialization to V3 behavior — all collections are pre-initialized to empty instances.
+
+```csharp
+// Program.cs or application startup — set before constructing any SDK clients
+Amazon.AWSConfigs.InitializeCollections = true;
+```
+
+<Warning>
+`InitializeCollections = true` is a compatibility shim intended to smooth the migration. It removes the performance benefits of V4's null-default behavior. Plan to remove it and fix collection access patterns once your migration is complete.
+</Warning>
+
+## Breaking change 2: Nullable value types
+
+Properties that previously had concrete value types now return nullable types. Update code that assigns response values to non-nullable variables.
+
+```diff
+- int count = response.Count;               // Compile error in V4: int? cannot assign to int
++ int count = response.Count ?? 0;          // Safe: fall back to 0 if not set
+
+- bool enabled = response.VersioningEnabled; // Compile error in V4
++ bool enabled = response.VersioningEnabled ?? false;
+
+- DateTime created = response.CreationDate;  // Compile error in V4
++ DateTime created = response.CreationDate ?? DateTime.MinValue;
+```
+
+When building requests, you set nullable properties the same way as before — the SDK only sends a property to the service when it is non-null:
+
+```csharp
+// Setting request properties works the same as in V3
+var request = new PutBucketVersioningRequest
+{
+    BucketName = "my-bucket",
+    VersioningConfig = new S3BucketVersioningConfig
+    {
+        Status = VersionStatus.Enabled
+    }
+};
+```
+
+## Breaking change 3: Target framework changes
+
+V4 requires one of the following targets:
+
+| Target | Minimum version |
+|--------|----------------|
+| .NET Framework | 4.7.2 |
+| .NET Standard | 2.0 |
+| .NET Core | 3.1 |
+| .NET | 8.0 |
+
+Update your project file if you are currently targeting an older framework:
+
+```diff
+  <PropertyGroup>
+-   <TargetFramework>net462</TargetFramework>
++   <TargetFramework>net472</TargetFramework>
+  </PropertyGroup>
+```
+
+## Step-by-step migration process
+
+<Steps>
+  <Step title="Upgrade the NuGet packages">
+    Update all `AWSSDK.*` packages to V4 in your project file or via the Package Manager:
+
+    ```bash
+    dotnet add package AWSSDK.Core
+    dotnet add package AWSSDK.S3
+    # repeat for each service package you use
+    ```
+  </Step>
+  <Step title="Fix compilation errors">
+    Build your project and address the compiler errors introduced by nullable value type properties. Use `??` to provide defaults where needed.
+  </Step>
+  <Step title="Add InitializeCollections as a temporary safety net (optional)">
+    If you have many collection accesses to update, set `AWSConfigs.InitializeCollections = true` at startup to get your application running first. This lets you migrate incrementally.
+
+    ```csharp
+    Amazon.AWSConfigs.InitializeCollections = true;
+    ```
+  </Step>
+  <Step title="Fix collection null checks">
+    Search your codebase for iteration over SDK response collections and add null guards. Use the `?.` and `??` operators for concise null-safe access.
+  </Step>
+  <Step title="Remove InitializeCollections">
+    Once all collection accesses are guarded, remove the `InitializeCollections = true` line to reclaim the performance improvements V4 provides.
+  </Step>
+  <Step title="Run your test suite">
+    Run integration tests against a non-production environment to confirm all SDK interactions work correctly.
+  </Step>
+</Steps>
+
+## Further reading
+
+- [V4 announcement blog post](https://aws.amazon.com/blogs/developer/preview-1-of-aws-sdk-for-net-v4/)
+- [Null Collections in V4](/migration/nullable-collections)
+- [NuGet packages](/reference/nuget-packages)
+- [Versioning](/reference/versioning)

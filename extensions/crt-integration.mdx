@@ -1,0 +1,147 @@
+---
+title: "AWS Common Runtime (CRT) Integration"
+description: "Enable SigV4a signing, S3 Multi-Region Access Points, S3 object integrity checksums, and EventBridge Global Endpoints by adding the AWSSDK.Extensions.CrtIntegration package."
+---
+
+The `AWSSDK.Extensions.CrtIntegration` package bridges the AWS SDK for .NET and the [AWS Common Runtime (CRT)](https://docs.aws.amazon.com/sdkref/latest/guide/common-runtime.html), a set of low-level, high-performance AWS libraries written in C. Adding this package to your project unlocks a set of SDK features that require CRT implementations that are not available in pure managed code.
+
+## What CRT enables
+
+<CardGroup cols={2}>
+  <Card title="S3 Multi-Region Access Points" icon="globe">
+    Route S3 requests through a Multi-Region Access Point (MRAP) that automatically directs traffic to the closest S3 bucket replica. MRAP endpoints require SigV4a signing, which is provided by the CRT.
+  </Card>
+  <Card title="S3 Object Integrity (Checksums)" icon="shield-check">
+    Use CRC32, CRC32C, and CRC64NVME checksum algorithms when uploading or downloading S3 objects. These algorithms are implemented by the CRT and are faster than the managed alternatives.
+  </Card>
+  <Card title="EventBridge Global Endpoints" icon="network-wired">
+    Send events to an EventBridge global endpoint that replicates events across multiple regions. Like MRAPs, global endpoints require SigV4a signing.
+  </Card>
+  <Card title="SigV4a Signing" icon="key">
+    Asymmetric Signature Version 4 (SigV4a) produces request signatures valid across multiple AWS regions. The `CrtAWS4aSigner` class in this package provides the implementation.
+  </Card>
+</CardGroup>
+
+## Installation
+
+Add the NuGet package to your project. The package targets .NET Framework 4.7.2, .NET Standard 2.0, .NET Core 3.1, and .NET 8+.
+
+```bash
+dotnet add package AWSSDK.Extensions.CrtIntegration
+```
+
+The package pulls in two CRT dependencies automatically:
+
+- `AWSCRT-AUTH` — provides the SigV4a signing implementation
+- `AWSCRT-CHECKSUMS` — provides CRC32, CRC32C, and CRC64NVME checksum algorithms
+
+## Automatic activation
+
+No additional code is required after adding the package reference. The SDK discovers the CRT signer and checksum provider at startup through assembly scanning. Once `AWSSDK.Extensions.CrtIntegration` is in your dependency graph, the relevant SDK features become available immediately.
+
+<Warning>
+  If you use a feature that requires CRT without adding this package, the SDK raises an exception at runtime:
+
+  ```
+  Attempting to make a request that requires an implementation of AWS Signature V4a.
+  Add a reference to the AWSSDK.Extensions.CrtIntegration NuGet package to your
+  project to include the AWS Signature V4a signer.
+  ```
+
+  This error occurs when you access S3 Multi-Region Access Points, EventBridge Global Endpoints, or any other operation that requires SigV4a.
+</Warning>
+
+## Using S3 Multi-Region Access Points
+
+A Multi-Region Access Point provides a single global endpoint that routes requests to the nearest S3 bucket. The endpoint looks like:
+
+```
+<mrap-alias>.mrap.accesspoint.s3-global.amazonaws.com
+```
+
+Because MRAP endpoints are global rather than region-specific, the SDK must sign requests with SigV4a. After you add `AWSSDK.Extensions.CrtIntegration`, the SDK selects the CRT signer automatically when it detects an MRAP endpoint.
+
+<Note>
+  SigV4a is required for all Multi-Region Access Point operations. Standard SigV4 signatures are region-bound and are rejected by MRAP endpoints. Always ensure `AWSSDK.Extensions.CrtIntegration` is installed before making any MRAP request.
+</Note>
+
+```csharp
+using Amazon.S3;
+using Amazon.S3.Model;
+
+// Use the region closest to your application; the MRAP routes the request
+// to the appropriate bucket replica regardless of which region you specify.
+var config = new AmazonS3Config
+{
+    RegionEndpoint = Amazon.RegionEndpoint.USEast1
+};
+
+using var s3 = new AmazonS3Client(config);
+
+// Supply the MRAP ARN as the bucket name
+var mrapArn = "arn:aws:s3::123456789012:accesspoint/mfzwi23gnjvgw.mrap";
+
+var putRequest = new PutObjectRequest
+{
+    BucketName  = mrapArn,
+    Key         = "my-object.txt",
+    ContentBody = "Hello from a Multi-Region Access Point!"
+};
+
+await s3.PutObjectAsync(putRequest);
+
+var getRequest = new GetObjectRequest
+{
+    BucketName = mrapArn,
+    Key        = "my-object.txt"
+};
+
+using var getResponse = await s3.GetObjectAsync(getRequest);
+using var reader = new StreamReader(getResponse.ResponseStream);
+Console.WriteLine(await reader.ReadToEndAsync());
+```
+
+## Using S3 Object Integrity checksums
+
+When you enable checksum validation on a PutObject or GetObject request, the SDK uses the CRT to compute and verify checksums. This ensures end-to-end data integrity without additional code.
+
+```csharp
+using Amazon.S3;
+using Amazon.S3.Model;
+
+using var s3 = new AmazonS3Client();
+
+// Upload with a CRC32C checksum; S3 verifies it server-side
+var putRequest = new PutObjectRequest
+{
+    BucketName       = "my-bucket",
+    Key              = "important-file.bin",
+    FilePath         = "/path/to/important-file.bin",
+    ChecksumAlgorithm = ChecksumAlgorithm.CRC32C
+};
+
+await s3.PutObjectAsync(putRequest);
+
+// Download and verify the stored checksum
+var getRequest = new GetObjectRequest
+{
+    BucketName        = "my-bucket",
+    Key               = "important-file.bin",
+    ChecksumMode      = ChecksumMode.ENABLED
+};
+
+using var response = await s3.GetObjectAsync(getRequest);
+// The SDK verifies the checksum and throws if it does not match
+```
+
+## Package dependencies
+
+The following table summarises what each CRT NuGet package provides:
+
+| Package | Purpose |
+|---|---|
+| `AWSSDK.Extensions.CrtIntegration` | Wires the CRT into the SDK; provides `CrtAWS4aSigner` and `CrtChecksums` |
+| `AWSCRT-AUTH` | Native CRT library for asymmetric SigV4a request signing |
+| `AWSCRT-CHECKSUMS` | Native CRT library for CRC32, CRC32C, and CRC64NVME checksums |
+
+You only need to reference `AWSSDK.Extensions.CrtIntegration` directly. NuGet resolves the native packages automatically.

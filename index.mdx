@@ -1,97 +1,81 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "AWS SDK for .NET"
+description: "Build .NET applications that integrate with Amazon Web Services using modular, async-first NuGet packages."
 ---
 
-## Setting up
+The AWS SDK for .NET enables .NET developers to work with Amazon Web Services through a familiar, idiomatic API. Each AWS service is available as a separate NuGet package built on a shared core, so you only include the dependencies you need.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Make your first AWS API call in minutes with step-by-step instructions.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="box" href="/installation">
+    Install service packages via NuGet for .NET Framework, .NET Standard, or .NET 8+.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Authentication" icon="key" href="/credentials/overview">
+    Configure credentials using environment variables, profiles, or IAM roles.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Working with Services" icon="aws" href="/services/s3">
+    Explore guides for S3, DynamoDB, Lambda, SQS, SNS, and more.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What's in the SDK
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="400+ AWS Services" icon="layer-group" href="/installation">
+    Every AWS service has a dedicated NuGet package — from S3 and DynamoDB to Bedrock and EKS.
+  </Card>
+  <Card title="Async/Await First" icon="bolt" href="/quickstart">
+    Every service operation has a native async counterpart for high-throughput .NET applications.
+  </Card>
+  <Card title="Credential Provider Chain" icon="shield-halved" href="/credentials/overview">
+    Automatic discovery of credentials from environment, profiles, and EC2/ECS metadata.
+  </Card>
+  <Card title="ASP.NET Core Integration" icon="plug" href="/extensions/aspnet-core">
+    Register AWS clients in the dependency injection container with a single line of code.
+  </Card>
+  <Card title="Built-in Retry Logic" icon="rotate" href="/core/retry-handling">
+    Standard and adaptive retry policies with configurable backoff handle transient failures automatically.
+  </Card>
+  <Card title="DynamoDB Object Persistence" icon="database" href="/services/dynamodb">
+    Map .NET classes to DynamoDB tables using the high-level DataModel API.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Getting started
 
-## Need inspiration?
+<Steps>
+  <Step title="Install a service package">
+    Add the NuGet package for the AWS service you want to use:
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    ```bash
+    dotnet add package AWSSDK.S3
+    ```
+  </Step>
+  <Step title="Configure credentials">
+    The SDK automatically picks up credentials from the AWS credentials file, environment variables, or IAM roles. For local development, configure the AWS CLI:
+
+    ```bash
+    aws configure
+    ```
+  </Step>
+  <Step title="Create a service client and make a call">
+    ```csharp
+    using Amazon.S3;
+    using Amazon.S3.Model;
+
+    var s3Client = new AmazonS3Client(Amazon.RegionEndpoint.USEast1);
+
+    var response = await s3Client.ListBucketsAsync();
+    foreach (var bucket in response.Buckets)
+    {
+        Console.WriteLine(bucket.BucketName);
+    }
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Migrating from V3? See the [V3 to V4 migration guide](/migration/v3-to-v4) for a summary of breaking changes and upgrade steps.
+</Tip>

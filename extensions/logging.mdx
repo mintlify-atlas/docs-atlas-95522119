@@ -1,0 +1,256 @@
+---
+title: "Logging"
+description: "Route AWS SDK for .NET log output to Microsoft.Extensions.Logging or log4net using the provided logging adapter packages."
+---
+
+The AWS SDK for .NET has an internal logging system that emits diagnostic information about SDK requests, retries, errors, and performance metrics. By default, this output goes nowhere. The adapter packages described on this page route SDK log output to logging frameworks you already use in your application.
+
+## Available adapters
+
+<CardGroup cols={2}>
+  <Card title="AWSSDK.Extensions.Logging.ILoggerAdaptor" icon="microsoft">
+    Routes SDK logs to `Microsoft.Extensions.Logging`. The preferred choice for ASP.NET Core applications and any project that uses the standard .NET logging abstractions.
+  </Card>
+  <Card title="AWSSDK.Extensions.Logging.Log4NetAdaptor" icon="list">
+    Routes SDK logs to [log4net](https://logging.apache.org/log4net/). Use this when your application already depends on log4net for structured or file-based logging.
+  </Card>
+</CardGroup>
+
+## SDK log levels
+
+The SDK emits log entries at six levels that map to corresponding levels in each framework:
+
+| SDK level (`SdkLogLevel`) | ILogger level | log4net level |
+|---|---|---|
+| `Trace` | `Trace` | `Debug` (log4net has no Trace) |
+| `Debug` | `Debug` | `Debug` |
+| `Info` | `Information` | `Info` |
+| `Warn` | `Warning` | `Warn` |
+| `Error` | `Error` | `Error` |
+| `Fatal` | `Critical` | `Fatal` |
+
+## What gets logged
+
+The SDK can log several categories of information. You control what is captured using `AWSConfigs.LoggingConfig` or the `Logging` section of `AWSOptions`:
+
+- **Request metrics** — latency, attempt counts, retry backoff durations, and endpoint information for every SDK call
+- **Response status** — HTTP status codes and error details, optionally only on error
+- **Response bodies** — raw HTTP response content up to a configurable size limit
+- **Informational messages** — credential resolution path, region detection, configuration loading
+
+<Warning>
+  Enabling response body logging (`LogResponses`) in production can expose sensitive data — S3 object contents, DynamoDB item values, and other payload data will appear in your logs. Enable it only in development or staging environments, and always set `LogResponsesSizeLimit` to cap the volume of data written.
+</Warning>
+
+## Configuration
+
+### Via AWSOptions (ASP.NET Core)
+
+When you use `AWSSDK.Extensions.NETCore.Setup`, configure logging in the `"AWS"."Logging"` section of `appsettings.json`:
+
+```json
+{
+  "AWS": {
+    "Region": "us-east-1",
+    "Logging": {
+      "LogTo": "SystemDiagnostics",
+      "LogResponses": "OnError",
+      "LogMetrics": true,
+      "LogResponsesSizeLimit": 4096
+    }
+  }
+}
+```
+
+| Key | Type | Values |
+|---|---|---|
+| `LogTo` | enum | `None`, `Log4Net`, `SystemDiagnostics` |
+| `LogResponses` | enum | `Never`, `OnError`, `Always` |
+| `LogMetrics` | bool | `true` / `false` |
+| `LogResponsesSizeLimit` | int | Size in bytes (default: 1024) |
+
+### Via AWSConfigs (all project types)
+
+You can configure logging programmatically at any point before the first SDK call, regardless of whether you use the ASP.NET Core setup package:
+
+```csharp
+using Amazon;
+
+// Direct to System.Diagnostics Trace
+AWSConfigs.LoggingConfig.LogTo = LoggingOptions.SystemDiagnostics;
+
+// Log response bodies only when an error occurs
+AWSConfigs.LoggingConfig.LogResponses = ResponseLoggingOption.OnError;
+
+// Limit logged response size to 4 KB
+AWSConfigs.LoggingConfig.LogResponsesSizeLimit = 4096;
+
+// Include per-call performance metrics in the log output
+AWSConfigs.LoggingConfig.LogMetrics = true;
+```
+
+## Microsoft.Extensions.Logging adapter
+
+### Installation
+
+```bash
+dotnet add package AWSSDK.Extensions.Logging.ILoggerAdaptor
+```
+
+### Setup
+
+Call `ConfigureAWSSDKLogging()` on the application's `ILoggerFactory` after the DI container is built. In ASP.NET Core, the factory is available on `app.Services`:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDefaultAWSOptions(builder.Configuration.GetAWSOptions());
+builder.Services.AddAWSService<IAmazonS3>();
+
+var app = builder.Build();
+
+// Wire the SDK's internal logger to Microsoft.Extensions.Logging
+app.Services.GetRequiredService<ILoggerFactory>()
+    .ConfigureAWSSDKLogging();
+
+app.Run();
+```
+
+For console applications or other host types where `ILoggerFactory` is built manually:
+
+```csharp
+using Microsoft.Extensions.Logging;
+
+using var loggerFactory = LoggerFactory.Create(logging =>
+{
+    logging.AddConsole();
+    logging.SetMinimumLevel(LogLevel.Debug);
+});
+
+// Register the adapter with the SDK
+loggerFactory.ConfigureAWSSDKLogging();
+
+// SDK log output now flows through the ILoggerFactory above
+using var s3 = new AmazonS3Client();
+var response = await s3.ListBucketsAsync();
+```
+
+SDK log entries appear under the logger category name derived from the internal SDK type, for example `Amazon.Runtime.Internal.HttpHandler` or `Amazon.S3.AmazonS3Client`. You can filter SDK output in your logging configuration by the `Amazon` prefix:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Warning",
+      "Amazon": "Debug"
+    }
+  }
+}
+```
+
+## Log4Net adapter
+
+### Installation
+
+```bash
+dotnet add package AWSSDK.Extensions.Logging.Log4NetAdaptor
+```
+
+### Setup
+
+Configure log4net using an XML configuration file (the standard approach), then call `Log4NetAWSExtensions.ConfigureAWSSDKLogging()` before making any SDK calls:
+
+<Tabs>
+  <Tab title="Program.cs">
+    ```csharp
+    using Amazon.Extensions.Logging.Log4NetAdaptor;
+    using log4net;
+    using log4net.Config;
+
+    // Apply the log4net configuration from the XML file
+    [assembly: XmlConfigurator(ConfigFile = "log4net.config", Watch = true)]
+
+    // Register the adapter — SDK logs now flow to log4net
+    Log4NetAWSExtensions.ConfigureAWSSDKLogging();
+
+    // Your application code follows
+    using var s3 = new AmazonS3Client();
+    var response = await s3.ListBucketsAsync();
+    ```
+  </Tab>
+  <Tab title="log4net.config">
+    ```xml
+    <?xml version="1.0" encoding="utf-8" ?>
+    <log4net>
+      <appender name="ConsoleAppender" type="log4net.Appender.ConsoleAppender">
+        <layout type="log4net.Layout.PatternLayout">
+          <conversionPattern value="%date [%thread] %-5level %logger - %message%newline" />
+        </layout>
+      </appender>
+
+      <appender name="FileAppender" type="log4net.Appender.RollingFileAppender">
+        <file value="logs/awssdk.log" />
+        <appendToFile value="true" />
+        <rollingStyle value="Size" />
+        <maxSizeRollBackups value="5" />
+        <maximumFileSize value="10MB" />
+        <layout type="log4net.Layout.PatternLayout">
+          <conversionPattern value="%date [%thread] %-5level %logger - %message%newline" />
+        </layout>
+      </appender>
+
+      <!-- Capture AWS SDK logs at DEBUG and above -->
+      <logger name="Amazon">
+        <level value="DEBUG" />
+        <appender-ref ref="FileAppender" />
+      </logger>
+
+      <root>
+        <level value="WARN" />
+        <appender-ref ref="ConsoleAppender" />
+      </root>
+    </log4net>
+    ```
+  </Tab>
+</Tabs>
+
+Note that log4net does not have a `Trace` level. SDK `Trace`-level messages are written at `Debug` level in log4net.
+
+## Deregistering an adapter
+
+Each adapter registers itself under a string name (`"ILogger"` or `"Log4Net"`). You can remove a registered adapter at runtime using `AdaptorLoggerFactoryRegistry.DeregisterAdaptorLoggerFactory`:
+
+```csharp
+using Amazon.Runtime.Logging;
+
+// Stop routing SDK logs to the previously registered adapter
+AdaptorLoggerFactoryRegistry.DeregisterAdaptorLoggerFactory("ILogger");
+// or
+AdaptorLoggerFactoryRegistry.DeregisterAdaptorLoggerFactory("Log4Net");
+```
+
+## Adapter comparison
+
+<Tabs>
+  <Tab title="ILoggerAdaptor">
+    ```csharp
+    // ILoggerFactory extension — one call wires up the SDK
+    app.Services.GetRequiredService<ILoggerFactory>()
+        .ConfigureAWSSDKLogging();
+    ```
+
+    - Works with any `ILoggerFactory` implementation: console, Serilog, NLog, Application Insights, etc.
+    - Log category names come from the SDK's internal type hierarchy, filterable by the `Amazon` prefix.
+    - Level mapping: `Trace` → `Trace`, `Debug` → `Debug`, `Info` → `Information`, `Warn` → `Warning`, `Error` → `Error`, `Fatal` → `Critical`.
+  </Tab>
+  <Tab title="Log4NetAdaptor">
+    ```csharp
+    // Static call — no DI required
+    Log4NetAWSExtensions.ConfigureAWSSDKLogging();
+    ```
+
+    - Uses `LogManager.GetLogger(type)` internally — standard log4net logger resolution by type.
+    - Does not require a DI container; compatible with classic .NET Framework applications.
+    - Level mapping: `Trace` → `Debug`, `Debug` → `Debug`, `Info` → `Info`, `Warn` → `Warn`, `Error` → `Error`, `Fatal` → `Fatal`.
+  </Tab>
+</Tabs>

@@ -1,0 +1,169 @@
+---
+title: "AWS Lambda"
+description: "Use the AWS SDK for .NET to invoke Lambda functions synchronously or asynchronously, list deployed functions, and deserialise response payloads."
+---
+
+## Installation
+
+Add the `AWSSDK.Lambda` NuGet package to your project:
+
+```bash
+dotnet add package AWSSDK.Lambda
+```
+
+## Create a client
+
+```csharp
+using Amazon.Lambda;
+
+var lambdaClient = new AmazonLambdaClient();
+```
+
+---
+
+## Invoke a function
+
+The `InvokeAsync` method sends a request to Lambda and returns an `InvokeResponse`. The `InvocationType` property controls whether the call is synchronous, fire-and-forget, or a dry run.
+
+<Note>
+  **InvocationType values**
+
+  | Value | HTTP status | Description |
+  |-------|-------------|-------------|
+  | `RequestResponse` (default) | 200 | Invoke synchronously and wait for the function to return or time out. The response body and any function error are included in `Payload`. |
+  | `Event` | 202 | Invoke asynchronously. Lambda queues the request and returns immediately. `Payload` is empty. |
+  | `DryRun` | 204 | Validate parameters and permissions without executing the function. |
+</Note>
+
+<CodeGroup>
+
+```csharp Synchronous (RequestResponse)
+using Amazon.Lambda;
+using Amazon.Lambda.Model;
+using System.Text;
+using System.Text.Json;
+
+var lambdaClient = new AmazonLambdaClient();
+
+// Build a JSON payload for the function
+var payload = JsonSerializer.Serialize(new
+{
+    action = "process",
+    recordId = "rec-001"
+});
+
+var request = new InvokeRequest
+{
+    FunctionName   = "my-processing-function",
+    InvocationType = InvocationType.RequestResponse,
+    Payload        = payload
+};
+
+var response = await lambdaClient.InvokeAsync(request);
+
+// Check for a function-level error (distinct from HTTP errors)
+if (!string.IsNullOrEmpty(response.FunctionError))
+{
+    Console.Error.WriteLine($"Function error: {response.FunctionError}");
+}
+
+// Deserialise the response payload
+string responseJson = Encoding.UTF8.GetString(response.Payload.ToArray());
+Console.WriteLine($"Status: {response.StatusCode}, Response: {responseJson}");
+```
+
+```csharp Asynchronous (Event)
+using Amazon.Lambda;
+using Amazon.Lambda.Model;
+using System.Text.Json;
+
+var lambdaClient = new AmazonLambdaClient();
+
+var payload = JsonSerializer.Serialize(new
+{
+    action = "notify",
+    userId = "usr-42"
+});
+
+var request = new InvokeRequest
+{
+    FunctionName   = "my-notification-function",
+    InvocationType = InvocationType.Event,  // fire-and-forget
+    Payload        = payload
+};
+
+var response = await lambdaClient.InvokeAsync(request);
+
+// Status 202 means Lambda accepted the event
+Console.WriteLine($"Accepted with status: {response.StatusCode}");
+```
+
+</CodeGroup>
+
+---
+
+## Deserialise the response payload
+
+The `Payload` property on `InvokeResponse` is a `MemoryStream`. Read it as a UTF-8 string and then deserialise with `System.Text.Json` or any compatible library:
+
+```csharp
+using System.Text;
+using System.Text.Json;
+
+// After a synchronous invocation:
+string rawJson = Encoding.UTF8.GetString(response.Payload.ToArray());
+
+// Deserialise into a known type
+var result = JsonSerializer.Deserialize<MyFunctionResult>(rawJson, new JsonSerializerOptions
+{
+    PropertyNameCaseInsensitive = true
+});
+
+Console.WriteLine($"Result status: {result.Status}");
+```
+
+---
+
+## Invoke a specific version or alias
+
+Set the `Qualifier` property to a published version number or an alias name:
+
+```csharp
+var request = new InvokeRequest
+{
+    FunctionName   = "my-processing-function",
+    Qualifier      = "production",  // alias or version, e.g. "2"
+    InvocationType = InvocationType.RequestResponse,
+    Payload        = payload
+};
+
+var response = await lambdaClient.InvokeAsync(request);
+Console.WriteLine($"Executed version: {response.ExecutedVersion}");
+```
+
+---
+
+## List functions
+
+```csharp
+using Amazon.Lambda.Model;
+
+var listRequest = new ListFunctionsRequest
+{
+    MaxItems = 50
+};
+
+ListFunctionsResponse listResponse;
+do
+{
+    listResponse = await lambdaClient.ListFunctionsAsync(listRequest);
+
+    foreach (var function in listResponse.Functions ?? [])
+    {
+        Console.WriteLine($"{function.FunctionName}  runtime={function.Runtime}  modified={function.LastModified}");
+    }
+
+    listRequest.Marker = listResponse.NextMarker;
+}
+while (!string.IsNullOrEmpty(listResponse.NextMarker));
+```

@@ -1,80 +1,183 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Make your first AWS API call with the AWS SDK for .NET in under five minutes."
 ---
 
-## Get started in three steps
+This guide walks you through installing the SDK, configuring credentials, and making real API calls against Amazon S3.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+  Run integration tests only against non-production AWS accounts. The SDK creates and deletes real AWS resources during testing, and charges may apply.
+</Note>
 
-### Step 1: Set up your local environment
+<Steps>
+  <Step title="Install the S3 package">
+    The SDK is distributed as modular NuGet packages — one per service. Add the `AWSSDK.S3` package to your project:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    <CodeGroup>
 
-### Step 2: Deploy your changes
+    ```bash .NET CLI
+    dotnet add package AWSSDK.S3
+    ```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```powershell NuGet Package Manager
+    Install-Package AWSSDK.S3
+    ```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    </CodeGroup>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    `AWSSDK.Core` is pulled in automatically as a transitive dependency.
+  </Step>
 
-### Step 3: Go live
+  <Step title="Configure credentials">
+    The SDK uses a credential provider chain that automatically checks several sources in order. For local development, the simplest approach is to configure the AWS CLI:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```bash
+    aws configure
+    ```
+
+    The CLI prompts you for your AWS Access Key ID, Secret Access Key, default region, and output format. Credentials are stored in `~/.aws/credentials`.
+
+    Alternatively, you can supply credentials through environment variables:
+
+    ```bash
+    export AWS_ACCESS_KEY_ID=your-access-key-id
+    export AWS_SECRET_ACCESS_KEY=your-secret-access-key
+    export AWS_REGION=us-east-1
+    ```
+
+    <Tip>
+      When running on AWS infrastructure (EC2, ECS, Lambda), you do not need to configure credentials manually. The SDK automatically retrieves temporary credentials from the instance or task IAM role.
+    </Tip>
+  </Step>
+
+  <Step title="Create an S3 client and list buckets">
+    Create an `AmazonS3Client` and call `ListBucketsAsync` to verify your credentials and connection:
+
+    ```csharp
+    using Amazon.S3;
+    using Amazon.S3.Model;
+
+    var s3Client = new AmazonS3Client(Amazon.RegionEndpoint.USEast1);
+
+    ListBucketsResponse response = await s3Client.ListBucketsAsync();
+
+    foreach (var bucket in response.Buckets ?? [])
+    {
+        Console.WriteLine($"{bucket.BucketName}  (created {bucket.CreationDate:yyyy-MM-dd})");
+    }
+    ```
+
+    `AmazonS3Client` picks up credentials from the provider chain automatically. To target a different region, replace `USEast1` with the appropriate `RegionEndpoint` value, or set the `AWS_REGION` environment variable.
+  </Step>
+
+  <Step title="Upload a file to S3">
+    Use `PutObjectAsync` to upload a file to an existing bucket:
+
+    ```csharp
+    using Amazon.S3;
+    using Amazon.S3.Model;
+
+    var s3Client = new AmazonS3Client(Amazon.RegionEndpoint.USEast1);
+
+    const string bucketName = "my-example-bucket";
+    const string keyName    = "uploads/hello.txt";
+    const string filePath   = "/tmp/hello.txt";
+
+    await File.WriteAllTextAsync(filePath, "Hello from the AWS SDK for .NET!");
+
+    var putRequest = new PutObjectRequest
+    {
+        BucketName  = bucketName,
+        Key         = keyName,
+        FilePath    = filePath,
+        ContentType = "text/plain"
+    };
+
+    PutObjectResponse putResponse = await s3Client.PutObjectAsync(putRequest);
+    Console.WriteLine($"Upload HTTP status: {(int)putResponse.HttpStatusCode}");
+    ```
+  </Step>
+
+  <Step title="Download the file from S3">
+    Use `GetObjectAsync` to retrieve the object you just uploaded:
+
+    ```csharp
+    using Amazon.S3;
+    using Amazon.S3.Model;
+
+    var s3Client = new AmazonS3Client(Amazon.RegionEndpoint.USEast1);
+
+    const string bucketName    = "my-example-bucket";
+    const string keyName       = "uploads/hello.txt";
+    const string downloadPath  = "/tmp/hello-downloaded.txt";
+
+    var getRequest = new GetObjectRequest
+    {
+        BucketName = bucketName,
+        Key        = keyName
+    };
+
+    using GetObjectResponse getResponse = await s3Client.GetObjectAsync(getRequest);
+    await getResponse.WriteResponseStreamToFileAsync(downloadPath, append: false, CancellationToken.None);
+
+    Console.WriteLine(await File.ReadAllTextAsync(downloadPath));
+    // Output: Hello from the AWS SDK for .NET!
+    ```
+  </Step>
+</Steps>
+
+## Complete example
+
+The following self-contained program combines all four operations — list, upload, download, and verify:
+
+```csharp
+using Amazon.S3;
+using Amazon.S3.Model;
+
+const string bucketName   = "my-example-bucket";   // must already exist
+const string keyName      = "quickstart/hello.txt";
+const string region       = "us-east-1";
+
+using var s3Client = new AmazonS3Client(Amazon.RegionEndpoint.GetBySystemName(region));
+
+// 1. List buckets
+Console.WriteLine("Buckets:");
+var listResponse = await s3Client.ListBucketsAsync();
+foreach (var bucket in listResponse.Buckets ?? [])
+    Console.WriteLine($"  {bucket.BucketName}");
+
+// 2. Upload
+var putRequest = new PutObjectRequest
+{
+    BucketName  = bucketName,
+    Key         = keyName,
+    ContentBody = "Hello from the AWS SDK for .NET!",
+    ContentType = "text/plain"
+};
+await s3Client.PutObjectAsync(putRequest);
+Console.WriteLine($"\nUploaded s3://{bucketName}/{keyName}");
+
+// 3. Download
+var getRequest = new GetObjectRequest { BucketName = bucketName, Key = keyName };
+using var getResponse = await s3Client.GetObjectAsync(getRequest);
+using var reader = new StreamReader(getResponse.ResponseStream);
+string content = await reader.ReadToEndAsync();
+Console.WriteLine($"Downloaded content: {content}");
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation" icon="box" href="/installation">
+    Explore the full NuGet package catalog and supported target frameworks.
+  </Card>
+  <Card title="Authentication" icon="key" href="/credentials/overview">
+    Learn about credential types, profiles, and IAM roles.
+  </Card>
+  <Card title="Amazon S3" icon="database" href="/services/s3">
+    In-depth guide to S3 operations, multipart uploads, and presigned URLs.
+  </Card>
+  <Card title="ASP.NET Core" icon="plug" href="/extensions/aspnet-core">
+    Register AWS clients in the dependency injection container.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

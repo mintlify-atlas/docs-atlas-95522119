@@ -1,0 +1,153 @@
+---
+title: "NuGet packages"
+description: "A guide to the AWS SDK for .NET NuGet packages, including popular service packages and extension packages."
+keywords: ["nuget", "packages", "install", "AWSSDK", "dependencies"]
+---
+
+The AWS SDK for .NET is distributed as a set of modular NuGet packages — one per AWS service, plus a shared core package. You only install the packages for the services your application uses.
+
+All official packages are published under the [awsdotnet](https://www.nuget.org/profiles/awsdotnet) NuGet profile. There are **400+ service packages** available, covering the full breadth of AWS services.
+
+## Installing packages
+
+<Tabs>
+  <Tab title=".NET CLI">
+    ```bash
+    dotnet add package AWSSDK.S3
+    dotnet add package AWSSDK.DynamoDBv2
+    ```
+  </Tab>
+  <Tab title="Package Manager Console">
+    ```bash
+    Install-Package AWSSDK.S3
+    Install-Package AWSSDK.DynamoDBv2
+    ```
+  </Tab>
+  <Tab title="PackageReference">
+    ```xml
+    <ItemGroup>
+      <PackageReference Include="AWSSDK.S3" Version="4.*" />
+      <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.*" />
+    </ItemGroup>
+    ```
+  </Tab>
+</Tabs>
+
+You do not need to add `AWSSDK.Core` explicitly — NuGet resolves it as a transitive dependency of every service package.
+
+## Popular packages
+
+<CardGroup cols={2}>
+  <Card title="AWSSDK.S3" icon="database" href="https://www.nuget.org/packages/AWSSDK.S3">
+    Amazon S3 object storage. Upload, download, and manage objects and buckets. Includes multi-part upload support.
+  </Card>
+  <Card title="AWSSDK.DynamoDBv2" icon="table" href="https://www.nuget.org/packages/AWSSDK.DynamoDBv2">
+    Amazon DynamoDB. Includes both the low-level service client and the high-level DataModel and DocumentModel APIs.
+  </Card>
+  <Card title="AWSSDK.Lambda" icon="bolt" href="https://www.nuget.org/packages/AWSSDK.Lambda">
+    AWS Lambda. Invoke functions, manage function configuration, and work with aliases and versions.
+  </Card>
+  <Card title="AWSSDK.SQS" icon="mail" href="https://www.nuget.org/packages/AWSSDK.SQS">
+    Amazon Simple Queue Service. Send, receive, and delete messages from standard and FIFO queues.
+  </Card>
+  <Card title="AWSSDK.SimpleNotificationService" icon="bell" href="https://www.nuget.org/packages/AWSSDK.SimpleNotificationService">
+    Amazon Simple Notification Service. Publish messages to topics and manage subscriptions across protocols.
+  </Card>
+  <Card title="AWSSDK.SecretsManager" icon="lock" href="https://www.nuget.org/packages/AWSSDK.SecretsManager">
+    AWS Secrets Manager. Store, retrieve, and rotate database credentials, API keys, and other secrets.
+  </Card>
+  <Card title="AWSSDK.KeyManagementService" icon="key" href="https://www.nuget.org/packages/AWSSDK.KeyManagementService">
+    AWS Key Management Service. Create and control the cryptographic keys used to encrypt your data.
+  </Card>
+  <Card title="AWSSDK.EC2" icon="server" href="https://www.nuget.org/packages/AWSSDK.EC2">
+    Amazon EC2. Launch and manage virtual machines, security groups, key pairs, and networking resources.
+  </Card>
+</CardGroup>
+
+## All packages
+
+### Core
+
+| Package | Description |
+|---------|-------------|
+| `AWSSDK.Core` | Required base library. Pulled in automatically as a dependency of every service package. Contains credential handling, request signing, retry logic, and shared types. |
+
+### Compute & containers
+
+| Package | Description |
+|---------|-------------|
+| `AWSSDK.Lambda` | Invoke and manage AWS Lambda functions. |
+| `AWSSDK.EC2` | Amazon EC2 virtual machines, networking, and storage. |
+| `AWSSDK.ECS` | Amazon Elastic Container Service — run containerized workloads. |
+| `AWSSDK.EKS` | Amazon Elastic Kubernetes Service. |
+
+### Storage & databases
+
+| Package | Description |
+|---------|-------------|
+| `AWSSDK.S3` | Amazon S3 object storage. |
+| `AWSSDK.DynamoDBv2` | Amazon DynamoDB, including DataModel and DocumentModel high-level APIs. |
+| `AWSSDK.RDS` | Amazon Relational Database Service. |
+| `AWSSDK.ElastiCache` | Amazon ElastiCache managed in-memory cache. |
+
+### Messaging & events
+
+| Package | Description |
+|---------|-------------|
+| `AWSSDK.SQS` | Amazon Simple Queue Service. |
+| `AWSSDK.SimpleNotificationService` | Amazon Simple Notification Service. |
+| `AWSSDK.EventBridge` | Amazon EventBridge event bus. |
+| `AWSSDK.Kinesis` | Amazon Kinesis Data Streams. |
+
+### Security & identity
+
+| Package | Description |
+|---------|-------------|
+| `AWSSDK.SecretsManager` | AWS Secrets Manager. |
+| `AWSSDK.KeyManagementService` | AWS Key Management Service. |
+| `AWSSDK.IAM` | AWS Identity and Access Management — manage users, roles, and policies. |
+| `AWSSDK.SecurityToken` | AWS Security Token Service — assume roles and generate temporary credentials. |
+| `AWSSDK.CognitoIdentityProvider` | Amazon Cognito User Pools — sign up, sign in, and manage users. |
+
+### Infrastructure & deployment
+
+| Package | Description |
+|---------|-------------|
+| `AWSSDK.CloudFormation` | AWS CloudFormation — provision infrastructure as code. |
+| `AWSSDK.CloudWatch` | Amazon CloudWatch metrics and alarms. |
+| `AWSSDK.CloudWatchLogs` | Amazon CloudWatch Logs. |
+
+## Extension packages
+
+These packages add integration capabilities beyond the base service clients.
+
+| Package | Description |
+|---------|-------------|
+| `AWSSDK.Extensions.NETCore.Setup` | ASP.NET Core dependency injection integration. Adds `AddAWSService<T>()` to `IServiceCollection`, enabling you to configure SDK clients via `appsettings.json` and inject them into your services. |
+| `AWSSDK.Extensions.CrtIntegration` | AWS Common Runtime (CRT) integration. Required for S3 Multi-Region Access Points, S3 Object Integrity checksums, and EventBridge Global Endpoints (which require AWS Signature V4a). |
+| `AWSSDK.Extensions.CognitoAuthentication` | Cognito SRP (Secure Remote Password) authentication. Simplifies the challenge-response authentication flow for Cognito User Pools. |
+
+### ASP.NET Core integration example
+
+```csharp
+// Program.cs
+builder.Services.AddDefaultAWSOptions(builder.Configuration.GetAWSOptions());
+builder.Services.AddAWSService<IAmazonS3>();
+builder.Services.AddAWSService<IAmazonDynamoDB>();
+```
+
+```json
+// appsettings.json
+{
+  "AWS": {
+    "Region": "us-east-1",
+    "Profile": "my-profile"
+  }
+}
+```
+
+## Related
+
+- [Full package list on NuGet](https://www.nuget.org/profiles/awsdotnet)
+- [Versioning](/reference/versioning)
+- [Troubleshooting](/reference/troubleshooting)

@@ -1,0 +1,258 @@
+---
+title: "Global Configuration"
+description: "Process-wide settings for the AWS SDK for .NET using the AWSConfigs static class or app.config / web.config."
+---
+
+`AWSConfigs` is a static class in the `Amazon` namespace that exposes process-wide defaults for the SDK. Settings you apply here affect every service client constructed after the change, unless that client has its own overriding value.
+
+<Note>
+  All `AWSConfigs` properties that affect client construction must be set **before** you create any service client. Changes made after client construction are not applied retroactively. The class is **not thread-safe** for writes; configure it once at application startup.
+</Note>
+
+## Setting global configuration
+
+<Tabs>
+  <Tab title="Code">
+    Set properties on `AWSConfigs` at the very beginning of your application's startup code — in `Program.cs`, `Startup.cs`, or a static constructor that runs before any client is built.
+
+    ```csharp
+    using Amazon;
+    using Amazon.Util;
+
+    // Set a default region for all clients that don't specify one
+    AWSConfigs.AWSRegion = "us-west-2";
+
+    // Use the "production" named profile from ~/.aws/credentials
+    AWSConfigs.AWSProfileName = "production";
+
+    // Override the path to the shared credentials file
+    AWSConfigs.AWSProfilesLocation = "/etc/myapp/aws-credentials";
+
+    // Enable logging to the system diagnostics trace listener
+    AWSConfigs.LoggingConfig.LogTo = LoggingOptions.SystemDiagnostics;
+    AWSConfigs.LoggingConfig.LogResponses = ResponseLoggingOption.OnError;
+    AWSConfigs.LoggingConfig.LogMetrics = true;
+
+    // Use V3-compatible collection initialization (non-null by default)
+    AWSConfigs.InitializeCollections = true;
+    ```
+  </Tab>
+
+  <Tab title="app.config / web.config">
+    You can configure the SDK entirely through `App.config` or `Web.config` without writing any C# code. Register the `aws` config section, then add your settings under the `<aws>` element.
+
+    ```xml
+    <?xml version="1.0" encoding="utf-8" ?>
+    <configuration>
+      <configSections>
+        <section name="aws" type="Amazon.AWSSection, AWSSDK.Core"/>
+      </configSections>
+
+      <aws region="us-west-2">
+        <logging logTo="Log4Net, SystemDiagnostics" logResponses="Always" logMetrics="true" />
+        <proxy host="localhost" port="8888" username="proxyuser" password="proxypass" />
+      </aws>
+
+      <!-- Legacy appSettings keys (also supported) -->
+      <appSettings>
+        <add key="AWSProfileName" value="production"/>
+        <add key="AWSProfilesLocation" value="c:\config\aws-credentials"/>
+      </appSettings>
+    </configuration>
+    ```
+
+    The `<aws>` section is read once at startup and populates `AWSConfigs` automatically. You do not need any additional code.
+  </Tab>
+</Tabs>
+
+## Property reference
+
+### AWSRegion
+
+<ParamField path="AWSRegion" type="string">
+  The default AWS region system name for clients that do not set `RegionEndpoint` or `ServiceURL` explicitly. Accepts any valid region system name such as `"us-east-1"` or `"eu-central-1"`.
+
+  The SDK also checks the `AWS_DEFAULT_REGION` environment variable and the active profile's `region` field. `AWSConfigs.AWSRegion` takes precedence over those when set.
+
+  <Tabs>
+    <Tab title="Code">
+      ```csharp
+      AWSConfigs.AWSRegion = "ap-southeast-1";
+      ```
+    </Tab>
+    <Tab title="app.config">
+      ```xml
+      <configSections>
+        <section name="aws" type="Amazon.AWSSection, AWSSDK.Core"/>
+      </configSections>
+      <aws region="ap-southeast-1" />
+      ```
+    </Tab>
+  </Tabs>
+</ParamField>
+
+### AWSProfileName
+
+<ParamField path="AWSProfileName" type="string">
+  The name of the credentials profile in the shared credentials file (`~/.aws/credentials`) or AWS config file (`~/.aws/config`) that the SDK uses when resolving credentials for clients that don't have credentials supplied explicitly.
+
+  The credential provider chain reads this value before checking the `AWS_PROFILE` environment variable, and falls back to `"default"` if neither is set.
+
+  <Tabs>
+    <Tab title="Code">
+      ```csharp
+      AWSConfigs.AWSProfileName = "development";
+      ```
+    </Tab>
+    <Tab title="app.config">
+      ```xml
+      <appSettings>
+        <add key="AWSProfileName" value="development"/>
+      </appSettings>
+      ```
+    </Tab>
+  </Tabs>
+</ParamField>
+
+### AWSProfilesLocation
+
+<ParamField path="AWSProfilesLocation" type="string">
+  An optional file-system path to a credentials file to use instead of the default `~/.aws/credentials`. Useful when deploying to environments where writing to the home directory is not possible.
+
+  <Tabs>
+    <Tab title="Code">
+      ```csharp
+      AWSConfigs.AWSProfilesLocation = @"C:\ProgramData\myapp\aws-credentials";
+      ```
+    </Tab>
+    <Tab title="app.config">
+      ```xml
+      <appSettings>
+        <add key="AWSProfilesLocation" value="c:\config\aws-credentials"/>
+      </appSettings>
+      ```
+    </Tab>
+  </Tabs>
+</ParamField>
+
+### LoggingConfig
+
+<ParamField path="LoggingConfig" type="LoggingConfig">
+  A configuration object that controls where and how the SDK writes log output. The object is accessed as a property — you set sub-properties on it rather than replacing it.
+
+  | Sub-property | Type | Description |
+  |---|---|---|
+  | `LogTo` | `LoggingOptions` | Log destination: `None`, `Log4Net`, `SystemDiagnostics`, `Console`, or a combination using flags. |
+  | `LogResponses` | `ResponseLoggingOption` | When to log HTTP responses: `Never`, `OnError`, or `Always`. |
+  | `LogResponsesSizeLimit` | `int` | Maximum bytes of a response body to log. Default is 1,024 bytes (1 KB). |
+  | `LogMetrics` | `bool` | Whether to log per-request performance metrics. |
+  | `LogMetricsFormat` | `LogMetricsFormatOption` | Format for logged metrics: `Standard` or `JSON`. |
+
+  ```csharp
+  using Amazon;
+  using Amazon.Util;
+
+  // Log warnings and errors to the system trace listener
+  AWSConfigs.LoggingConfig.LogTo = LoggingOptions.SystemDiagnostics;
+
+  // Log full response bodies only when a request fails
+  AWSConfigs.LoggingConfig.LogResponses = ResponseLoggingOption.OnError;
+
+  // Increase the response log size limit to 4 KB
+  AWSConfigs.LoggingConfig.LogResponsesSizeLimit = 4096;
+
+  // Include SDK performance metrics in logs
+  AWSConfigs.LoggingConfig.LogMetrics = true;
+  ```
+
+  In `app.config`:
+
+  ```xml
+  <aws>
+    <logging logTo="SystemDiagnostics" logResponses="OnError" logMetrics="true" />
+  </aws>
+  ```
+</ParamField>
+
+### InitializeCollections
+
+<ParamField path="InitializeCollections" type="bool" default="false">
+  Controls how collection properties on SDK request and response objects are initialized.
+
+  - **`false`** (default, SDK v4 behavior): Collections are initialized to `null`. A collection is only serialized into the request body when it is non-null, giving you precise control over whether an empty list or a missing field is sent to the service.
+  - **`true`** (SDK v3 behavior): Collections are initialized to empty instances at construction time. An empty collection is still serialized and sent to the service.
+
+  Set this to `true` if you are migrating from SDK v3 and need to preserve the old null-collection behavior across a large codebase.
+
+  ```csharp
+  // Revert to V3 collection initialization behavior
+  AWSConfigs.InitializeCollections = true;
+  ```
+
+  In `app.config`:
+
+  ```xml
+  <appSettings>
+    <add key="AWSInitializeCollections" value="true"/>
+  </appSettings>
+  ```
+</ParamField>
+
+## Full app.config example
+
+The snippet below is taken directly from the `AWSConfigs` class docstring and shows every supported `<aws>` configuration element:
+
+```xml
+<?xml version="1.0" encoding="utf-8" ?>
+<configuration>
+  <configSections>
+    <section name="aws" type="Amazon.AWSSection, AWSSDK.Core"/>
+  </configSections>
+
+  <aws region="us-west-2">
+    <logging logTo="Log4Net, SystemDiagnostics" logResponses="Always" logMetrics="true" />
+    <proxy host="localhost" port="8888" username="1" password="1" />
+
+    <dynamoDB>
+      <dynamoDBContext tableNamePrefix="Prod-" metadataCachingMode="Default"
+                       disableFetchingTableMetadata="false" retrieveDateTimeInUtc="false">
+
+        <tableAliases>
+          <alias fromTable="FakeTable" toTable="People" />
+          <alias fromTable="Persons"   toTable="People" />
+        </tableAliases>
+
+        <mappings>
+          <map type="Sample.Tests.Author, SampleDLL" targetTable="People" />
+          <map type="Sample.Tests.Editor, SampleDLL" targetTable="People">
+            <property name="FullName"    attribute="Name" />
+            <property name="EmployeeId"  attribute="Id" />
+            <property name="ComplexData" converter="Sample.Tests.ComplexDataConverter, SampleDLL" />
+            <property name="Version"     version="true" />
+            <property name="Password"    ignore="true" />
+          </map>
+        </mappings>
+
+      </dynamoDBContext>
+    </dynamoDB>
+  </aws>
+</configuration>
+```
+
+## Overriding the credential provider chain globally
+
+For advanced scenarios where the default credential search order doesn't meet your needs, you can replace the list of credential generators used by `DefaultAWSCredentialsIdentityResolver`:
+
+```csharp
+using Amazon;
+using Amazon.Runtime.Credentials;
+
+// Replace the default credential provider chain with a custom sequence
+AWSConfigs.AWSCredentialsGenerators = new List<DefaultAWSCredentialsIdentityResolver.CredentialsGenerator>
+{
+    () => new Amazon.Runtime.EnvironmentVariablesAWSCredentials(),
+    () => new Amazon.Runtime.InstanceProfileAWSCredentials()
+};
+```
+
+All service clients constructed after this assignment will use the specified generators in order. Set this only at application startup, before constructing any clients.

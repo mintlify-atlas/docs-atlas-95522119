@@ -1,0 +1,187 @@
+---
+title: "Retry Handling"
+description: "Configure retry behavior in the AWS SDK for .NET using Legacy, Standard, and Adaptive retry modes."
+---
+
+The AWS SDK for .NET automatically retries failed requests that encounter transient errors or throttling responses. Every service client derives its retry behavior from a `RetryPolicy` subclass, selected by the `RetryMode` property on the client's configuration object.
+
+## Retry modes
+
+The SDK ships three retry policy implementations. You select between them by setting `ClientConfig.RetryMode` to a value from the `RequestRetryMode` enum.
+
+<Tabs>
+  <Tab title="Legacy (DefaultRetryPolicy)">
+    `RequestRetryMode.Legacy` uses `DefaultRetryPolicy`. This is the original retry strategy and applies a pure exponential backoff formula without jitter:
+
+    ```
+    delay = min(4^retries * 100 ms, maxBackoff)
+    ```
+
+    The maximum backoff cap is **30 000 ms** by default. This mode is retained for backward compatibility with applications that relied on the original SDK behavior.
+
+    ```csharp
+    using Amazon.S3;
+    using Amazon.Runtime;
+
+    var config = new AmazonS3Config
+    {
+        RetryMode    = RequestRetryMode.Legacy,
+        MaxErrorRetry = 4,   // up to 4 retries (5 total attempts)
+        RegionEndpoint = Amazon.RegionEndpoint.USEast1
+    };
+
+    using var client = new AmazonS3Client(config);
+    ```
+  </Tab>
+  <Tab title="Standard (StandardRetryPolicy)">
+    `RequestRetryMode.Standard` uses `StandardRetryPolicy`. This is the **default** mode as of the current SDK. It applies exponential backoff **with jitter**:
+
+    ```
+    delay = min(rand(0, 1) * 2^(retries-1) * 1000 ms, maxBackoff)
+    ```
+
+    The maximum backoff cap is **20 000 ms** by default. Standard mode also activates the retry throttling (token bucket) capacity manager, which prevents retry storms when a large proportion of requests are failing.
+
+    ```csharp
+    using Amazon.DynamoDBv2;
+    using Amazon.Runtime;
+
+    var config = new AmazonDynamoDBConfig
+    {
+        RetryMode     = RequestRetryMode.Standard,
+        MaxErrorRetry = 2,   // default for Standard mode
+        RegionEndpoint = Amazon.RegionEndpoint.USWest2
+    };
+
+    using var client = new AmazonDynamoDBClient(config);
+    ```
+  </Tab>
+  <Tab title="Adaptive (AdaptiveRetryPolicy)">
+    `RequestRetryMode.Adaptive` uses `AdaptiveRetryPolicy`, which extends `StandardRetryPolicy` with a **token bucket** that dynamically throttles the client's outgoing request rate in response to throttling errors from the service.
+
+    Before every request (initial attempt or retry), `ObtainSendToken` is called. If the token bucket cannot supply a token, the call either blocks until one is available or throws immediately, depending on `FastFailRequests`.
+
+    On success, `NotifySuccess` updates the token bucket's replenishment rate upward. On a throttling error, `OnRetry` calls `TokenBucket.UpdateClientSendingRate(isThrottlingError: true)` to reduce the rate.
+
+    ```csharp
+    using Amazon.SQS;
+    using Amazon.Runtime;
+
+    var config = new AmazonSQSConfig
+    {
+        RetryMode        = RequestRetryMode.Adaptive,
+        MaxErrorRetry    = 2,
+        FastFailRequests = false,   // block waiting for a token rather than throw immediately
+        RegionEndpoint   = Amazon.RegionEndpoint.EUWest1
+    };
+
+    using var client = new AmazonSQSClient(config);
+    ```
+
+    <Note>
+      The adaptive mode's token bucket algorithm is distinct from the retry throttling capacity manager used by Standard mode. The token bucket controls the **overall send rate** for every request (including first attempts), not just whether a specific retry is permitted. Set `FastFailRequests = true` if you want the client to throw `AmazonClientException` immediately when the bucket is empty instead of waiting.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Configuring retry attempts
+
+`MaxErrorRetry` is the number of **retries**, not the total number of attempts. An `MaxErrorRetry` of `2` means the SDK makes up to 3 total calls (1 initial + 2 retries).
+
+```csharp
+var config = new AmazonS3Config
+{
+    RetryMode     = RequestRetryMode.Standard,
+    MaxErrorRetry = 5,   // up to 5 retries → 6 total attempts
+    RegionEndpoint = Amazon.RegionEndpoint.USEast1
+};
+```
+
+You can also configure the maximum attempt count globally via the `AWS_MAX_ATTEMPTS` environment variable or `max_attempts` in your shared configuration file. The SDK subtracts one from that value automatically to convert it to a retry count.
+
+```bash
+export AWS_RETRY_MODE=standard
+export AWS_MAX_ATTEMPTS=3   # SDK translates this to MaxErrorRetry = 2
+```
+
+## Which errors are retried
+
+The base `RetryPolicy` class defines four categories of retryable conditions shared by all three modes.
+
+### Throttling errors
+
+Any `AmazonServiceException` whose `ErrorCode` matches one of the following strings (case-insensitive) is considered a throttling error and is retried:
+
+| Error code |
+|---|
+| `Throttling` |
+| `ThrottlingException` |
+| `ThrottledException` |
+| `RequestThrottledException` |
+| `TooManyRequestsException` |
+| `ProvisionedThroughputExceededException` |
+| `TransactionInProgressException` |
+| `RequestLimitExceeded` |
+| `BandwidthLimitExceeded` |
+| `LimitExceededException` |
+| `RequestThrottled` |
+| `SlowDown` |
+| `PriorRequestNotComplete` |
+
+An exception can also be flagged as a throttling error by setting `AmazonServiceException.Retryable.Throttling = true` in a service-specific subclass.
+
+### Transient errors
+
+The following conditions are treated as transient and retried:
+
+- **HTTP status codes**: `500 InternalServerError`, `503 ServiceUnavailable`, `502 BadGateway`, `504 GatewayTimeout`
+- **Web exception statuses**: `ConnectFailure`, `ConnectionClosed`, `KeepAliveFailure`, `NameResolutionFailure`, `ReceiveFailure`, `SendFailure`, `Timeout`
+- **`IOException`** (except `FileNotFoundException` and those caused by `ThreadAbortException` on .NET Framework)
+- **`HttpRequestException`** that did not reach the service (on .NET Standard/5+)
+- **`OperationCanceledException`** thrown by `HttpClient` (not by a user-supplied cancellation token)
+- **`TimeoutException`** on .NET 5+ (wraps timed-out `HttpClient` calls)
+- **`ObjectDisposedException`** on .NET Standard (libcurl concurrency workaround)
+- **Stale connection socket errors**: `SocketError.Shutdown`, `SocketError.ConnectionReset`, `SocketError.ConnectionAborted`
+
+### Service timeout errors
+
+Requests whose error code is `RequestTimeout` or `RequestTimeoutException` are retried and charged against a special timeout capacity bucket (cost: 10 units) rather than the standard retry capacity bucket (cost: 5 units).
+
+### Clock skew
+
+When the local clock differs significantly from the server clock, the SDK detects definite clock-skew error codes (`RequestTimeTooSkewed`, `RequestExpired`, `RequestInTheFuture`) and automatically corrects the offset before retrying. This retry bypasses the normal capacity acquisition and does not consume a retry slot.
+
+## Disabling retries
+
+To disable all automatic retries, set `MaxErrorRetry` to `0`:
+
+```csharp
+var config = new AmazonS3Config
+{
+    MaxErrorRetry  = 0,
+    RegionEndpoint = Amazon.RegionEndpoint.USEast1
+};
+
+using var client = new AmazonS3Client(config);
+```
+
+You can also turn off the retry throttling capacity manager independently while keeping retries enabled:
+
+```csharp
+var config = new AmazonS3Config
+{
+    RetryMode      = RequestRetryMode.Standard,
+    MaxErrorRetry  = 2,
+    ThrottleRetries = false,  // disable the capacity manager; retries are still attempted
+    RegionEndpoint  = Amazon.RegionEndpoint.USEast1
+};
+```
+
+## Retry mode via environment variable
+
+```bash
+# Choose the retry mode (legacy | standard | adaptive)
+export AWS_RETRY_MODE=adaptive
+```
+
+The SDK reads `AWS_RETRY_MODE` at startup through `FallbackInternalConfigurationFactory` and uses it as the default when `RetryMode` has not been set directly on the config object.

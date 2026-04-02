@@ -1,0 +1,226 @@
+---
+title: "Amazon S3"
+description: "Use the AWS SDK for .NET to work with Amazon Simple Storage Service (S3) — list and create buckets, upload and download objects, generate presigned URLs, and transfer large files with TransferUtility."
+---
+
+## Installation
+
+Add the `AWSSDK.S3` NuGet package to your project:
+
+```bash
+dotnet add package AWSSDK.S3
+```
+
+## Create a client
+
+```csharp
+using Amazon.S3;
+
+var s3Client = new AmazonS3Client();
+```
+
+Pass an `AmazonS3Config` object to the constructor to customise behaviour, for example to force path-style addressing or enable Transfer Acceleration:
+
+```csharp
+var config = new AmazonS3Config
+{
+    ForcePathStyle = false,
+    UseAccelerateEndpoint = false
+};
+var s3Client = new AmazonS3Client(config);
+```
+
+<Note>
+  To use S3 Multi-Region Access Points (MRAPs) you must install the `AWSSDK.Extensions.CrtIntegration` NuGet package. Without it, MRAP requests fail at runtime with a message indicating the AWS Signature V4a signer is missing.
+</Note>
+
+---
+
+## Basic operations
+
+<Tabs>
+  <Tab title="Basic API">
+    ### List buckets
+
+    ```csharp
+    using Amazon.S3;
+    using Amazon.S3.Model;
+
+    var response = await s3Client.ListBucketsAsync();
+    foreach (var bucket in response.Buckets ?? [])
+    {
+        Console.WriteLine($"{bucket.BucketName}  created {bucket.CreationDate:d}");
+    }
+    ```
+
+    ### Create a bucket
+
+    ```csharp
+    var createRequest = new PutBucketRequest
+    {
+        BucketName = "my-example-bucket",
+        UseClientRegion = true
+    };
+    await s3Client.PutBucketAsync(createRequest);
+    ```
+
+    ### Upload an object
+
+    ```csharp
+    var putRequest = new PutObjectRequest
+    {
+        BucketName = "my-example-bucket",
+        Key = "photos/sunset.jpg",
+        FilePath = "/local/path/sunset.jpg",
+        ContentType = "image/jpeg"
+    };
+    await s3Client.PutObjectAsync(putRequest);
+    ```
+
+    ### Download an object
+
+    ```csharp
+    var getRequest = new GetObjectRequest
+    {
+        BucketName = "my-example-bucket",
+        Key = "photos/sunset.jpg"
+    };
+
+    using var getResponse = await s3Client.GetObjectAsync(getRequest);
+    await getResponse.WriteResponseStreamToFileAsync(
+        "/local/path/downloaded-sunset.jpg",
+        append: false,
+        CancellationToken.None);
+    ```
+
+    ### Delete an object
+
+    ```csharp
+    var deleteRequest = new DeleteObjectRequest
+    {
+        BucketName = "my-example-bucket",
+        Key = "photos/sunset.jpg"
+    };
+    await s3Client.DeleteObjectAsync(deleteRequest);
+    ```
+  </Tab>
+
+  <Tab title="TransferUtility">
+    `TransferUtility` is a high-level helper built on top of `AmazonS3Client`. It automatically uses S3 multipart uploads for files larger than 16 MB and parallelises transfers across up to 10 concurrent threads by default.
+
+    ### Set up TransferUtility
+
+    ```csharp
+    using Amazon.S3;
+    using Amazon.S3.Transfer;
+
+    var s3Client = new AmazonS3Client();
+
+    // Optional: tune multipart behaviour
+    var config = new TransferUtilityConfig
+    {
+        MinSizeBeforePartUpload = 16 * 1024 * 1024, // 16 MB (default)
+        ConcurrentServiceRequests = 10              // parallel part uploads (default)
+    };
+
+    using var transferUtility = new TransferUtility(s3Client, config);
+    ```
+
+    ### Upload a file
+
+    ```csharp
+    // Simple upload — multipart is used automatically for large files
+    await transferUtility.UploadAsync("/local/path/large-video.mp4", "my-example-bucket", "videos/large-video.mp4");
+    ```
+
+    ### Upload with full control via TransferUtilityUploadRequest
+
+    ```csharp
+    var uploadRequest = new TransferUtilityUploadRequest
+    {
+        BucketName  = "my-example-bucket",
+        Key         = "videos/large-video.mp4",
+        FilePath    = "/local/path/large-video.mp4",
+        ContentType = "video/mp4",
+        PartSize    = 8 * 1024 * 1024,  // 8 MB per part
+        StorageClass = S3StorageClass.IntelligentTiering
+    };
+
+    // Track upload progress
+    uploadRequest.UploadProgressEvent += (sender, args) =>
+        Console.WriteLine($"Uploaded {args.TransferredBytes}/{args.TotalBytes} bytes");
+
+    await transferUtility.UploadAsync(uploadRequest);
+    ```
+
+    ### Download a file
+
+    ```csharp
+    var downloadRequest = new TransferUtilityDownloadRequest
+    {
+        BucketName = "my-example-bucket",
+        Key        = "videos/large-video.mp4",
+        FilePath   = "/local/path/downloaded-video.mp4"
+    };
+
+    downloadRequest.WriteObjectProgressEvent += (sender, args) =>
+        Console.WriteLine($"Downloaded {args.TransferredBytes}/{args.TotalBytes} bytes");
+
+    await transferUtility.DownloadAsync(downloadRequest);
+    ```
+
+    ### Upload an entire directory
+
+    ```csharp
+    await transferUtility.UploadDirectoryAsync(
+        "/local/path/assets/",
+        "my-example-bucket",
+        "assets/",
+        SearchOption.AllDirectories);
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Presigned URLs
+
+A presigned URL grants temporary access to a private object without requiring the caller to have AWS credentials. You can generate presigned URLs for `GET`, `PUT`, `DELETE`, and `HEAD` operations.
+
+```csharp
+using Amazon.S3;
+using Amazon.S3.Model;
+
+// Generate a presigned GET URL valid for 1 hour
+var request = new GetPreSignedUrlRequest
+{
+    BucketName = "my-example-bucket",
+    Key        = "photos/sunset.jpg",
+    Verb       = HttpVerb.GET,
+    Expires    = DateTime.UtcNow.AddHours(1)
+};
+
+string presignedUrl = s3Client.GetPreSignedURL(request);
+Console.WriteLine(presignedUrl);
+```
+
+For presigned uploads, use `HttpVerb.PUT` and include the `ContentType` so the signer enforces it:
+
+```csharp
+var putRequest = new GetPreSignedUrlRequest
+{
+    BucketName  = "my-example-bucket",
+    Key         = "uploads/photo.jpg",
+    Verb        = HttpVerb.PUT,
+    ContentType = "image/jpeg",
+    Expires     = DateTime.UtcNow.AddMinutes(15)
+};
+
+string uploadUrl = s3Client.GetPreSignedURL(putRequest);
+```
+
+Use `GetPreSignedURLAsync` for asynchronous generation:
+
+```csharp
+string url = await s3Client.GetPreSignedURLAsync(request);
+```

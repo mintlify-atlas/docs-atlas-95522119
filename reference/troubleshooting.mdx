@@ -1,0 +1,217 @@
+---
+title: "Troubleshooting"
+description: "Solutions to common errors and issues when using the AWS SDK for .NET."
+keywords: ["troubleshooting", "errors", "credentials", "signature", "timeout", "SSL", "null reference", "CS8032"]
+---
+
+<Warning>
+Before investigating a specific error, verify you are using the latest version of the relevant `AWSSDK.*` NuGet packages. Many issues are fixed in newer releases. Check the [SDK changelog](https://github.com/aws/aws-sdk-net/blob/main/changelogs/SDK.CHANGELOG.ALL.md) for details.
+</Warning>
+
+<Note>
+Enabling SDK logging is often the fastest way to diagnose unexpected behavior. The SDK can log requests, responses, headers, and metrics to multiple targets. See the [SDK Developer Guide](https://docs.aws.amazon.com/sdk-for-net/latest/developer-guide/net-dg-config-other.html) for logging configuration options.
+</Note>
+
+<AccordionGroup>
+
+  <Accordion title="Unable to find credentials">
+    **Error message:** `Amazon.Runtime.AmazonServiceException: Unable to find credentials` or `No credentials found with the default credentials search`
+
+    The SDK searches for credentials in this order (the default credential chain):
+
+    1. Credentials explicitly set on the client constructor or via `AWSCredentials`
+    2. The `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables
+    3. The AWS shared credentials file (`~/.aws/credentials`) and config file (`~/.aws/config`)
+    4. The `AWSSDK.Core` SDK Store (Windows only)
+    5. IAM role credentials from the EC2 instance metadata service (IMDS)
+    6. ECS task role credentials
+    7. SSO credentials from the AWS config file
+
+    **Common fixes:**
+
+    - Run `aws configure` (AWS CLI) to create `~/.aws/credentials` with a default profile.
+    - Set the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION` environment variables in your process.
+    - If running on EC2, ECS, or Lambda, verify the IAM role attached to your instance or task has the required permissions.
+    - If using a named profile, set `AWSConfigs.AWSProfileName` or the `AWS_PROFILE` environment variable:
+
+    ```csharp
+    Amazon.AWSConfigs.AWSProfileName = "my-profile";
+    ```
+
+    - Pass credentials explicitly when you need to bypass the credential chain entirely:
+
+    ```csharp
+    var credentials = new BasicAWSCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+    var client = new AmazonS3Client(credentials, RegionEndpoint.USEast1);
+    ```
+  </Accordion>
+
+  <Accordion title="The request signature we calculated does not match the signature you provided">
+    **Error message:** `The request signature we calculated does not match the signature you provided. Check your key and signing method.`
+
+    This error has two common causes: **clock skew** and **region mismatch**.
+
+    ### Clock skew
+
+    AWS request signatures include a timestamp. If your machine's clock differs from AWS server time by more than 15 minutes, signature validation fails.
+
+    The SDK automatically corrects for clock skew by default (`AWSConfigs.CorrectForClockSkew = true`). If auto-correction is not working, set a manual offset:
+
+    ```csharp
+    Amazon.AWSConfigs.ManualClockCorrection = TimeSpan.FromMinutes(-5);
+    ```
+
+    Synchronize your system clock (using NTP or your OS time service) to fix the root cause.
+
+    ### Region mismatch
+
+    The region used to sign the request must match the region the service endpoint belongs to. Verify that the region on your client matches the region where the resource exists:
+
+    ```csharp
+    // Explicitly set the region on the client
+    var client = new AmazonS3Client(RegionEndpoint.EUWest1);
+    ```
+
+    You can also set a default region via the environment variable `AWS_DEFAULT_REGION` or in the AWS config file.
+  </Accordion>
+
+  <Accordion title="CS8032: An instance of analyzer cannot be created">
+    **Warning message:** `warning CS8032: An instance of analyzer AWSSDK.Analyzers.XXX cannot be created from /path/to/analyzer.dll`
+
+    This warning appears on **Visual Studio 2017 and earlier**. The SDK's Roslyn analyzers target .NET Standard 2.0 (as of package version 3.7.200+), which VS 2017 cannot load.
+
+    Your SDK packages and application code still work correctly — only the compile-time analyzer diagnostics are skipped.
+
+    If your project treats all warnings as errors, suppress `CS8032` using `WarningsNotAsErrors` in your project file:
+
+    ```xml
+    <PropertyGroup>
+      <WarningsNotAsErrors>CS8032</WarningsNotAsErrors>
+    </PropertyGroup>
+    ```
+
+    The long-term fix is to upgrade to Visual Studio 2019 or later, which fully supports .NET Standard 2.0 analyzers.
+  </Accordion>
+
+  <Accordion title="Attempting to make a request that requires AWS Signature V4a">
+    **Error message:** `Attempting to make a request that requires an implementation of AWS Signature V4a. Add a reference to the AWSSDK.Extensions.CrtIntegration NuGet package to your project to include the AWS Signature V4a signer.`
+
+    Some features require AWS Signature V4a, which the base SDK does not include by default. Affected features:
+
+    - Amazon S3 Multi-Region Access Points
+    - Amazon S3 Object Integrity (checksum verification)
+    - Amazon EventBridge Global Endpoints
+
+    Install the `AWSSDK.Extensions.CrtIntegration` package to add the required AWS Signature V4a signer:
+
+    ```bash
+    dotnet add package AWSSDK.Extensions.CrtIntegration
+    ```
+
+    You do not need to change any code after adding the package — the SDK detects it automatically at runtime.
+  </Accordion>
+
+  <Accordion title="NullReferenceException when accessing response collection properties in V4">
+    **Error:** `System.NullReferenceException: Object reference not set to an instance of an object` when iterating over a collection property returned from a V4 SDK response.
+
+    In V4, collection properties (`List<T>`, `Dictionary<TKey, TValue>`) on response objects default to `null` instead of empty collections. Code that worked in V3 without null checks will throw at runtime in V4.
+
+    **Quick fix — restore V3 behavior temporarily:**
+
+    ```csharp
+    // Application startup, before constructing any SDK clients
+    Amazon.AWSConfigs.InitializeCollections = true;
+    ```
+
+    **Recommended fix — add null guards:**
+
+    ```csharp
+    // Before (V3-style, throws NullReferenceException in V4 when list is null)
+    foreach (var item in response.Items) { ... }
+
+    // After (null-safe)
+    foreach (var item in response.Items ?? []) { ... }
+
+    // Or with a null check
+    if (response.Items != null)
+    {
+        foreach (var item in response.Items) { ... }
+    }
+    ```
+
+    See [Null Collections in V4](/migration/nullable-collections) for a full explanation and a catalog of safe-access patterns.
+  </Accordion>
+
+  <Accordion title="Request timed out">
+    **Error:** `Amazon.Runtime.AmazonServiceException: A task was canceled` or `System.Threading.Tasks.TaskCanceledException` after waiting for a response.
+
+    The default `HttpClient` timeout is 100 seconds. For long-running operations (large S3 uploads/downloads, slow DynamoDB scans), you may need to increase this.
+
+    Set `Timeout` on the service client config:
+
+    ```csharp
+    var config = new AmazonS3Config
+    {
+        Timeout = TimeSpan.FromMinutes(10),
+        ReadWriteTimeout = TimeSpan.FromMinutes(10)
+    };
+    var client = new AmazonS3Client(config);
+    ```
+
+    For streaming uploads and downloads, also consider setting `ReadWriteTimeout` independently of `Timeout`.
+
+    If you pass a `CancellationToken` to async SDK methods, verify that your token is not being cancelled prematurely by a framework-level deadline (such as an ASP.NET Core request timeout).
+  </Accordion>
+
+  <Accordion title="SSL/TLS errors">
+    **Errors:** `The SSL connection could not be established`, `The remote certificate is invalid`, or `A connection attempt failed because the connected party did not properly respond`
+
+    **Corporate proxy:**
+
+    If your application runs behind a corporate proxy, configure the proxy on the client:
+
+    ```csharp
+    var config = new AmazonS3Config
+    {
+        ProxyHost = "proxy.example.com",
+        ProxyPort = 8080,
+        ProxyCredentials = new NetworkCredential("user", "password")
+    };
+    ```
+
+    You can also set the `HTTPS_PROXY` environment variable, which the SDK reads automatically.
+
+    **Certificate validation:**
+
+    If you are using a self-signed certificate in a development environment, you can disable certificate validation on the underlying `HttpClientHandler`. Do not disable certificate validation in production.
+
+    ```csharp
+    var httpHandler = new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+    };
+    var config = new AmazonS3Config
+    {
+        HttpClientFactory = new CustomHttpClientFactory(httpHandler)
+    };
+    ```
+
+    **TLS version:**
+
+    The SDK requires TLS 1.2 or later. Ensure that your operating system and .NET runtime support TLS 1.2. On .NET Framework, you may need to opt in explicitly:
+
+    ```csharp
+    System.Net.ServicePointManager.SecurityProtocol =
+        System.Net.SecurityProtocolType.Tls12 |
+        System.Net.SecurityProtocolType.Tls13;
+    ```
+  </Accordion>
+
+</AccordionGroup>
+
+## Still stuck?
+
+- Search [GitHub Issues](https://github.com/aws/aws-sdk-net/issues) for similar reports.
+- Ask on [Stack Overflow](https://stackoverflow.com/questions/tagged/aws-sdk-net) with the `aws-sdk-net` tag.
+- Open a support ticket via [AWS Support](https://console.aws.amazon.com/support/home) for account- or service-specific problems.
+- [Open a new GitHub issue](https://github.com/aws/aws-sdk-net/issues/new/choose) if you have found a bug. Include the SDK version, .NET target, OS, a stack trace, and a minimal repro if possible.
